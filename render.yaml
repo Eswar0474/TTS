@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: sonora-studio
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: TRUST_PROXY
+        value: "1"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DAILY_QUOTA_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: sonora-demo-db
+          property: connectionString
+
+databases:
+  - name: sonora-demo-db
+    plan: free
+    region: oregon
+    databaseName: sonora_demo
+    user: sonora_demo

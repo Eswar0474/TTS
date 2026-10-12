@@ -70,6 +70,28 @@ test('configuration excludes keys; validation and origin checks precede generati
   assert.equal(calls, 0);
 });
 
+test('origin checks use a configured fixed origin, never the request Host', async t => {
+  let calls = 0;
+  const base = await serve(t, async () => { calls++; return Buffer.from([0, 0]); }, {
+    apiKey: 'test-only',
+    model: DEFAULT_MODEL_ID,
+    publicOrigin: 'https://studio.example'
+  });
+  const allowed = await fetch(`${base}/api/config`, { headers: { Origin: 'https://studio.example' } });
+  assert.equal(allowed.status, 200);
+  const forged = await fetch(`${base}/api/generate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Host: 'rebind.example',
+      Origin: 'http://rebind.example'
+    },
+    body: JSON.stringify(body)
+  });
+  assert.equal(forged.status, 403);
+  assert.equal(calls, 0);
+});
+
 test('server enforces one shared 1000-word daily quota across requests', async t => {
   let calls = 0;
   const base = await serve(t, async () => { calls++; return Buffer.from([0, 0]); });

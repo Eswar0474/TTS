@@ -106,15 +106,33 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
   }
   const app = express();
   let active = 0;
-  const trustedProxies = process.env.TRUST_PROXY?.split(',').map((proxy) => proxy.trim()).filter(Boolean);
-  if (trustedProxies?.length) app.set('trust proxy', trustedProxies);
+  const proxySetting = config.trustProxy ?? process.env.TRUST_PROXY;
+  if (proxySetting) {
+    const trustedProxies = /^\d+$/.test(String(proxySetting))
+      ? Number(proxySetting)
+      : String(proxySetting).split(',').map((proxy) => proxy.trim()).filter(Boolean);
+    app.set('trust proxy', trustedProxies);
+  }
+  const configuredOrigins = config.publicOrigins ?? config.publicOrigin ??
+    process.env.PUBLIC_ORIGINS ?? process.env.PUBLIC_ORIGIN ?? process.env.RENDER_EXTERNAL_URL ?? '';
+  const originValues = Array.isArray(configuredOrigins)
+    ? configuredOrigins
+    : String(configuredOrigins).split(',').map((origin) => origin.trim()).filter(Boolean);
+  const allowedOrigins = new Set(originValues.map((origin) => {
+    const parsed = new URL(origin);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.origin !== origin.replace(/\/$/, '')) {
+      throw new Error('Configured public origins must be HTTP(S) origins without paths.');
+    }
+    return parsed.origin;
+  }));
+  if (process.env.NODE_ENV !== 'production') {
+    allowedOrigins.add('http://localhost:5173');
+    allowedOrigins.add('http://127.0.0.1:5173');
+  }
   app.use((req, res, next) => {
     const origin = req.get('Origin');
     if (origin) {
-      const sameOrigin = origin === `${req.protocol}://${req.get('host')}`;
-      const developmentOrigin = process.env.NODE_ENV !== 'production' &&
-        ['http://localhost:5173', 'http://127.0.0.1:5173'].includes(origin);
-      if (!sameOrigin && !developmentOrigin) return res.status(403).json({ error: 'Origin is not allowed.' });
+      if (!allowedOrigins.has(origin)) return res.status(403).json({ error: 'Origin is not allowed.' });
       res.vary('Origin');
       res.set('Access-Control-Allow-Origin', origin);
       res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -402,5 +420,6 @@ export async function synthesizeWithLiveApi({ text, model = DEFAULT_MODEL_ID, vo
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const port = process.env.PORT || 8787;
-  server.listen(port, process.env.HOST || '127.0.0.1', () => console.log(`Sonora proxy listening on http://localhost:${port}`));
+  const host = process.env.HOST || (process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1');
+  server.listen(port, host, () => console.log(`Sonora proxy listening on http://${host}:${port}`));
 }
