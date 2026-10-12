@@ -44,7 +44,7 @@ function createFakePostgresPool() {
   };
 }
 
-test('PostgreSQL quota is atomic, daily, hashed, and supports future user subjects', async () => {
+test('PostgreSQL quota applies separate atomic guest and account limits', async () => {
   const pool = createFakePostgresPool();
   let currentTime = new Date('2026-10-12T12:00:00.000Z');
   const quota = createPostgresDailyWordQuota({
@@ -69,6 +69,12 @@ test('PostgreSQL quota is atomic, daily, hashed, and supports future user subjec
   assert.equal(concurrent.filter(({ allowed }) => allowed).length, 1);
   assert.equal((await secondInstance.getUsageFor('user', userId)).used, 1000);
   assert.equal((await quota.getUsageFor('ip', userId)).used, 0);
+  const guest = await quota.consumeFor('ip', userId, 50);
+  assert.equal(guest.allowed, true);
+  assert.equal(guest.dailyWordQuota.limit, 50);
+  assert.equal(guest.dailyWordQuota.remaining, 0);
+  assert.equal((await quota.consumeFor('ip', userId, 1)).allowed, false);
+  assert.equal((await quota.getUsageFor('user', userId)).limit, 1000);
   assert.ok(pool.calls.some(({ sql }) => sql.includes("CHECK (subject_type IN ('ip', 'user'))")));
   assert.ok(pool.calls.filter(({ sql }) => sql.includes('INSERT INTO daily_word_usage'))
     .every(({ values }) => values[2] !== userId && /^[a-f0-9]{64}$/.test(values[2])));

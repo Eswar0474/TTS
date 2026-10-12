@@ -4,12 +4,9 @@ import { MODELS, DEFAULT_ENGINE, DEFAULT_MODEL_ID, MAX_TURNS_PER_LIVE_SESSION, c
 import { createMemoryDailyWordQuota } from '../server/quota.js';
 import { getModelPresentation, VOICE_LABELS } from '../src/presentation.js';
 
-test('catalog contains only the six SRS Live models', () => {
+test('catalog excludes models rejected by the Live audio endpoint', () => {
   assert.deepEqual(MODELS.map(model => [model.name, model.id, model.characterLimit]), [
     ['Gemini 2.5 Flash Native Audio Dialog', 'gemini-2.5-flash-native-audio-preview-12-2025', 1_000_000],
-    ['Gemini 3 Flash Live', 'gemini-3-flash-live', 65_000],
-    ['Gemini 3.5 Live Translate', 'gemini-3.5-live-translate', 20_000],
-    ['Gemini 3.5 Transcribe Live', 'gemini-3.5-transcribe-live', 20_000],
     ['Gemini 3.8 Live', 'gemini-3.8-live', 65_000],
     ['Gemini 3.8 Live Extended Thinking', 'gemini-3.8-live-extended-thinking', 65_000]
   ]);
@@ -29,7 +26,7 @@ test('studio profile labels cover the catalog without changing model IDs', () =>
     assert.doesNotMatch(presentation.description, /verified/i);
     names.push(presentation.name);
   }
-  assert.deepEqual(names, ['Studio Quality', 'Lite', 'Translate', 'Transcribe', 'Balanced', 'Enhanced Thinking']);
+  assert.deepEqual(names, ['Low Quality', 'Balanced', 'Enhanced Thinking']);
   assert.equal(MODELS[0].id, DEFAULT_MODEL_ID);
 });
 
@@ -44,8 +41,8 @@ async function serve(t, synthesize, config = { apiKey: 'test-only', model: DEFAU
 test('daily word quota separates IPs and resets at UTC midnight', async () => {
   let currentTime = new Date('2026-10-12T12:00:00.000Z');
   const quota = createMemoryDailyWordQuota({ secret: 'stable-test-secret', now: () => currentTime });
-  assert.equal((await quota.consume('192.0.2.1', 500)).dailyWordQuota.remaining, 500);
-  assert.equal((await quota.getUsage('192.0.2.1')).used, 500);
+  assert.equal((await quota.consume('192.0.2.1', 50)).dailyWordQuota.remaining, 0);
+  assert.equal((await quota.getUsage('192.0.2.1')).used, 50);
   assert.equal((await quota.getUsage('192.0.2.2')).used, 0);
   currentTime = new Date('2026-10-13T00:00:00.000Z');
   assert.equal((await quota.getUsage('192.0.2.1')).used, 0);
@@ -65,6 +62,9 @@ test('all catalog models route as Live with distinct caps and no custom escape',
     assert.equal((await post(model.id, 'x'.repeat(model.characterLimit + 1))).status, 413);
   }
   assert.equal((await post('gemini-custom-live')).status, 400);
+  for (const rejectedModel of ['gemini-3-flash-live', 'gemini-3.5-live-translate', 'gemini-3.5-transcribe-live']) {
+    assert.equal((await post(rejectedModel)).status, 400);
+  }
   assert.equal(calls.length, MODELS.length);
 });
 
@@ -149,7 +149,9 @@ test('Live config keeps the immutable instruction and AUDIO modality', async () 
   await synthesizeWithLiveApi({ text: 'Hello.', model: DEFAULT_MODEL_ID, voice: 'Kore', client });
   assert.deepEqual(input.config.responseModalities, ['AUDIO']);
   assert.equal(input.config.systemInstruction, SYSTEM_INSTRUCTION);
-  assert.match(SYSTEM_INSTRUCTION, /strictly and verbatim/);
+  assert.match(SYSTEM_INSTRUCTION, /never a question or request to answer/);
+  assert.match(SYSTEM_INSTRUCTION, /Read questions and greetings as written; do not respond to their meaning/);
+  assert.match(SYSTEM_INSTRUCTION, /Return speech audio only/);
 });
 
 test('extended-thinking model receives a supported thinking level', async () => {
@@ -174,6 +176,7 @@ test('extended-thinking model receives a supported thinking level', async () => 
     client
   });
   assert.deepEqual(input.config.thinkingConfig, { thinkingLevel: 'LOW' });
+  assert.match(input.config.systemInstruction, /not a conversational assistant/);
 });
 
 test('Live close logs the provider close code and reason', async t => {

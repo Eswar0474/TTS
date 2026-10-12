@@ -2,9 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MODEL_LIMITS, SYSTEM_INSTRUCTION, splitIntoChunks, wavHeader, VOICES } from '../server/index.js';
 
-test('default application cap is retained and unverified models are unavailable', () => {
+test('default and remaining model application caps are retained', () => {
   assert.equal(MODEL_LIMITS['gemini-2.5-flash-native-audio-dialog'], 1_000_000);
-  assert.equal(MODEL_LIMITS['gemini-3-flash-live'], 65_000);
+  assert.equal(MODEL_LIMITS['gemini-3.8-live'], 65_000);
+  assert.equal(MODEL_LIMITS['gemini-3.8-live-extended-thinking'], 65_000);
+  for (const rejected of ['gemini-3-flash-live', 'gemini-3.5-live-translate', 'gemini-3.5-transcribe-live']) {
+    assert.equal(MODEL_LIMITS[rejected], undefined);
+  }
 });
 test('chunking keeps punctuation boundaries and word limits', () => {
   const chunks = splitIntoChunks('First sentence. Second sentence! Third sentence?', 2);
@@ -30,7 +34,9 @@ test('WAV describes mono 24kHz 16-bit PCM with exact byte sizes', () => {
   assert.throws(() => wavHeader(3), RangeError);
   assert.equal(new Set(VOICES).size, 30);
 });
-test('system instruction is verbatim and immutable on the server', () => {
-  assert.match(SYSTEM_INSTRUCTION, /strictly and verbatim/);
-  assert.match(SYSTEM_INSTRUCTION, /Synthesize ONLY/);
+test('system instruction requires narration without conversation', () => {
+  assert.match(SYSTEM_INSTRUCTION, /never a question or request to answer/);
+  assert.match(SYSTEM_INSTRUCTION, /Speak only the exact script text/);
+  assert.match(SYSTEM_INSTRUCTION, /Read questions and greetings as written/);
+  assert.match(SYSTEM_INSTRUCTION, /Return speech audio only/);
 });

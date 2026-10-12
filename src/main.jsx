@@ -8,10 +8,9 @@ import { buildModulatedText } from './expression.js';
 import { getModelPresentation, VOICE_LABELS } from './presentation.js';
 
 const SAMPLE = 'The future is not a destination. It is a rhythm we learn to move with.';
-const DAILY_WORD_LIMIT = 1000;
-const validDailyWordQuota = (quota) => quota && quota.limit === DAILY_WORD_LIMIT &&
-  Number.isSafeInteger(quota.used) && quota.used >= 0 && quota.used <= DAILY_WORD_LIMIT &&
-  quota.remaining === DAILY_WORD_LIMIT - quota.used &&
+const validDailyWordQuota = (quota) => quota && [50, 1000].includes(quota.limit) &&
+  Number.isSafeInteger(quota.used) && quota.used >= 0 && quota.used <= quota.limit &&
+  quota.remaining === quota.limit - quota.used &&
   typeof quota.resetsAt === 'string' && Number.isFinite(Date.parse(quota.resetsAt));
 
 function validateConfig(data) {
@@ -19,6 +18,9 @@ function validateConfig(data) {
   const positiveLimit = (value) => Number.isSafeInteger(value) && value > 0;
   if (!data || typeof data.configured !== 'boolean' || !positiveLimit(data.characterLimit) || data.streaming !== true ||
     !validDailyWordQuota(data.dailyWordQuota) ||
+    !data.auth || typeof data.auth.enabled !== 'boolean' || typeof data.auth.signedIn !== 'boolean' ||
+    (data.auth.signedIn && !data.auth.enabled) ||
+    data.dailyWordQuota.limit !== (data.auth.signedIn ? 1000 : 50) ||
     !Array.isArray(data.voices) || !data.voices.every(nonempty) || new Set(data.voices).size !== data.voices.length ||
     !Array.isArray(data.models) || !data.models.length || !data.models.every((model) => model &&
       nonempty(model.id) && model.id.length <= 200 && !/\s/.test(model.id) && nonempty(model.name) &&
@@ -50,6 +52,7 @@ function App() {
   const [status, setStatus] = useState('idle');
   const [audioUrl, setAudioUrl] = useState('');
   const [error, setError] = useState('');
+  const [authActionError, setAuthActionError] = useState('');
   const [progress, setProgress] = useState({ completed: 0, total: 0 });
   const requestRef = useRef(null);
   const configRequestRef = useRef(null);
@@ -102,6 +105,17 @@ function App() {
     }
   }
 
+  async function signOut() {
+    setAuthActionError('');
+    try {
+      const response = await fetch('/api/auth/logout', { method: 'POST' });
+      if (!response.ok) throw new Error('Sign-out could not be completed. Please try again.');
+      await loadConfig();
+    } catch (err) {
+      setAuthActionError(err.message);
+    }
+  }
+
   useEffect(() => {
     mountedRef.current = true;
     void loadConfig();
@@ -137,8 +151,8 @@ function App() {
     if (requestRef.current || !ready) return;
     setError('');
      if (!text.trim()) return setError('Add some text before generating audio.');
-    if (overLimit) return setError(`Text exceeds the application cap of ${limit.toLocaleString()} characters.`);
-    if (overDailyLimit) return setError(`This request needs ${wordCount.toLocaleString()} words, but only ${dailyWordQuota.remaining.toLocaleString()} remain in today's shared-IP allowance.`);
+    if (overLimit) return setError(`Limit: ${limit.toLocaleString()} characters per request.`);
+    if (overDailyLimit) return setError(`Only ${dailyWordQuota.remaining.toLocaleString()} daily words remain.`);
     clearFile();
     const controller = new AbortController();
     requestRef.current = controller;
@@ -206,39 +220,49 @@ function App() {
   }
 
   return <div className="app-shell">
-    <header className="topbar"><div className="brand"><span className="brand-mark">◒</span><span>sonora</span><span className="badge">VOICE STUDIO</span></div><div className="topbar-right">Text-to-speech workspace</div></header>
+    <header className="topbar"><div className="brand"><span className="brand-mark">◒</span><span>sonora</span><span className="badge">VOICE STUDIO</span></div><div className="topbar-right"><span>Text-to-speech workspace</span>{config?.auth.signedIn
+      ? <button className="account-button" onClick={signOut}>Sign out</button>
+      : config?.auth.enabled
+        ? <a className="account-button" href="/auth/google">Sign in with Google</a>
+        : <button className="account-button" disabled title="Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI in Render to enable Google sign-in.">Sign in with Google</button>}</div>{authActionError && <p className="auth-error" role="alert">{authActionError}</p>}</header>
     <main className="workspace">
       <section className="hero"><div><p className="eyebrow">SONORA · CREATIVE AUDIO</p><h1>Bring your words<br /><em>to life.</em></h1><p className="hero-copy">Shape the delivery, choose a voice, and create a downloadable WAV narration from your script.</p></div><div className="hero-orb"><div className="orb-core" /><div className="wave wave-one" /><div className="wave wave-two" /><div className="wave wave-three" /></div></section>
       <section className="studio-grid">
-         <div className="panel input-panel"><div className="panel-heading"><div><span className="step">01</span><h2>Write your script</h2></div><button className="sample-button" disabled={generating || quotaExhausted} onClick={() => setText(SAMPLE)}>Use sample <span>↗</span></button></div><div className="expression-bar"><label className="expression-entry"><span className="expression-label">EMOTION & DELIVERY TAGS</span><input aria-label="Emotion and delivery tags" type="text" value={expressionTags} disabled={generating || quotaExhausted} onChange={(e) => setExpressionTags(e.target.value)} placeholder="e.g. Warm, excited, whispering" /><small>{buildModulatedText('', expressionTags).trim() || 'No tags added'}</small></label></div><p className="expression-hint">Write one or more tags separated by commas. Brackets are added automatically.</p><div className={`textarea-wrap ${quotaExhausted ? 'quota-locked' : ''}`}><textarea aria-label="Script" aria-disabled={quotaExhausted} disabled={generating || quotaExhausted} onChange={(e) => setText(e.target.value)} value={text} placeholder="Paste or write anything you want to hear…" />{quotaExhausted && <p className="quota-lock-message" role="status">Daily word allowance used. Editing is locked until the allowance resets.</p>}<div className="textarea-footer"><span className={overLimit ? 'counter over' : 'counter'}>{count.toLocaleString()} <span>/ {limit ? limit.toLocaleString() : '—'} characters</span></span><span className="tag-hint">⌁ Includes expression tags · not a token quota</span></div></div><div className="quota-track"><div style={{ width: `${percent}%` }} /></div><p className={overDailyLimit ? 'daily-quota over' : 'daily-quota'}>{dailyWordQuota ? `${dailyWordQuota.used.toLocaleString()} / ${dailyWordQuota.limit.toLocaleString()} words used today · ${dailyWordQuota.remaining.toLocaleString()} remaining · resets at 00:00 UTC` : 'Loading daily word allowance…'}</p><p className="quota-disclaimer">Submitted words, including delivery tags, count even if generation fails or is cancelled. Visitors sharing a public IP share this allowance.</p>{overLimit && <p className="error-text">Text exceeds the selected engine's application character cap by {(count - limit).toLocaleString()} characters. Shorten your script.</p>}{overDailyLimit && <p className="error-text">This request exceeds the remaining daily word allowance. Shorten your script or wait for the UTC reset.</p>}</div>
+         <div className="panel input-panel">
+           <div className="panel-heading"><div><span className="step">01</span><h2>Write your script</h2></div><button className="sample-button" disabled={generating || quotaExhausted} onClick={() => setText(SAMPLE)}>Use sample <span>↗</span></button></div>
+           <div className="expression-bar"><label className="expression-entry"><span className="expression-label">EMOTION & DELIVERY TAGS</span><input aria-label="Emotion and delivery tags" type="text" value={expressionTags} disabled={generating || quotaExhausted} onChange={(e) => setExpressionTags(e.target.value)} placeholder="e.g. Warm, excited, whispering" /><small>{buildModulatedText('', expressionTags).trim() || 'No tags added'}</small></label></div>
+           <p className="expression-hint">Add tags separated by commas.</p>
+           <div className={`textarea-wrap ${quotaExhausted ? 'quota-locked' : ''}`}><textarea aria-label="Script" aria-disabled={quotaExhausted} disabled={generating || quotaExhausted} onChange={(e) => setText(e.target.value)} value={text} placeholder="Write or paste your script…" />{quotaExhausted && <p className="quota-lock-message" role="status">Daily limit reached. Resets at midnight UTC.</p>}<div className="textarea-footer"><span className={overLimit ? 'counter over' : 'counter'}>{count.toLocaleString()} <span>/ {limit ? limit.toLocaleString() : '—'} characters</span></span><span className="tag-hint">Tags included</span></div></div>
+           <div className="quota-track"><div style={{ width: `${percent}%` }} /></div>
+           <p className={overDailyLimit ? 'daily-quota over' : 'daily-quota'}>{dailyWordQuota ? `${dailyWordQuota.used.toLocaleString()} / ${dailyWordQuota.limit.toLocaleString()} words today · ${dailyWordQuota.remaining.toLocaleString()} left · resets 00:00 UTC` : 'Loading daily allowance…'}</p>
+           <p className="quota-disclaimer">{config?.auth.signedIn ? 'Google account allowance · 1,000 words each UTC day.' : 'Guest allowance · 50 words each UTC day.'}</p>
+           {overLimit && <p className="error-text">Character limit reached. Shorten your script.</p>}{overDailyLimit && <p className="error-text">Daily word limit reached. Shorten your script or wait for reset.</p>}
+         </div>
         <aside className="panel settings-panel">
           <div className="panel-heading"><div><span className="step">02</span><h2>Voice settings</h2></div><span className="live-pill">STUDIO</span></div>
-           <label>ENGINE<select value={selectedModel ? modelId : ''} disabled={generating || configStatus !== 'ready'} onChange={(e) => changeSelection('modelId', e.target.value)} aria-describedby="engine-description engine-notice">
+           <label>ENGINE<select value={selectedModel ? modelId : ''} disabled={generating || configStatus !== 'ready'} onChange={(e) => changeSelection('modelId', e.target.value)} aria-describedby="engine-description">
              {!selectedModel && <option value="">{configStatus === 'loading' ? 'Loading engines…' : 'No engines available'}</option>}
              {(config?.models || []).map((model) => <option key={model.id} value={model.id}>{getModelPresentation(model).name}</option>)}
            </select></label>
            {selectedModel && modelPresentation && <div className="engine-description" id="engine-description">
              <div className="model-profile"><strong>{modelPresentation.profile}</strong><span>{selectedModel.characterLimit.toLocaleString()} character app limit</span></div>
-             <p>{modelPresentation.description}</p>
-             <p>Your audio streams as it is generated. A complete WAV is available when the run finishes.</p>
            </div>}
-           <div className="model-note" id="engine-notice"><span>✦</span><span>AI can make mistakes and may not produce the exact output you expect. Model profile names are descriptive labels only; text is sent as written, and per-request character caps are separate from the daily word allowance.</span></div>
+           <p className="model-note">AI may not produce the exact output you expect.</p>
           <div className="config-status" role="status"><p>{configStatus === 'loading' ? 'Checking server configuration…' : configError || (config?.configured ? 'Server configured · Streaming available' : 'Server is not configured. Set up the server, then retry.')}</p><button className="sample-button" disabled={generating || configStatus === 'loading'} onClick={loadConfig}>Retry configuration ↗</button></div>
           <label>VOICE<select value={voice} disabled={availability.voiceDisabled} onChange={(e) => changeSelection('voice', e.target.value)}>{!voice && <option value="">No voices available</option>}{(config?.voices || []).map((item) => <option key={item} value={item}>{VOICE_LABELS[item] || 'Studio voice'}</option>)}</select></label>
-          {config?.voices?.length > 0 && <p className="engine-description">Choose a voice by its studio display name. The selected voice setting is retained for generation.</p>}
           <div className="voice-preview"><div className="avatar">{VOICE_LABELS[voice]?.slice(0, 1) || '—'}</div><div><strong>{VOICE_LABELS[voice] || 'Choose a voice'}</strong><small>Studio voice</small></div><div className="mini-wave">▁▃▆▃▅▂▃</div></div>
           <button className="generate-button" disabled={availability.generateDisabled} aria-describedby="generation-requirements" onClick={generate}>{generating ? <><span className="spinner" /> Synthesizing…</> : <>Generate audio <span>→</span></>}</button>
-          <p id="generation-requirements" className="engine-description" role="status">{availability.reason || 'Ready to generate using your selected engine and voice.'}</p>
+          <p id="generation-requirements" className="engine-description" role="status">{availability.reason || 'Ready.'}</p>
           {error && <p className="error-text" role="alert">{error}</p>}
         </aside>
       </section>
       <section className={`output-panel ${audioUrl ? 'has-audio' : ''} ${generating ? 'is-generating' : ''}`}>
-        <div className="output-label"><span className="step">03</span><div><h2>{audioUrl ? 'Your download is ready' : 'Audio output'}</h2><p role="status">{generating ? `Generating WAV · ${progress.completed} of ${progress.total || '…'} segments complete` : audioUrl ? 'Your narration is complete. Download the WAV file below.' : status === 'cancelled' ? 'Generation cancelled · No partial file saved' : status === 'error' ? 'Generation failed · No partial file saved' : 'Your completed WAV file will be available here.'}</p></div></div>
+        <div className="output-label"><span className="step">03</span><div><h2>{audioUrl ? 'Preview your narration' : 'Audio output'}</h2><p role="status">{generating ? `Generating WAV · ${progress.completed} of ${progress.total || '…'} segments complete` : audioUrl ? 'Preview the completed audio below, or download the WAV file.' : status === 'cancelled' ? 'Generation cancelled · No partial file saved' : status === 'error' ? 'Generation failed · No partial file saved' : 'Your completed WAV file will be available here.'}</p></div></div>
         {generating && <div className="generation-progress"><div className="progress-caption"><span>Generation progress</span><strong>{progressPercent}%</strong></div><progress aria-label="Generation progress" value={progressPercent} max="100" /></div>}
-        <div className="output-controls">{generating && <button className="cancel-button" onClick={cancel}>Cancel generation</button>}{audioUrl && <a className="download-button" href={audioUrl} download="sonora-speech.wav">Download WAV ↓</a>}</div>
+        <div className="output-controls">{generating && <button className="cancel-button" onClick={cancel}>Cancel generation</button>}{audioUrl && <><audio controls preload="metadata" src={audioUrl} aria-label="Preview completed narration" /><a className="download-button" href={audioUrl} download="sonora-speech.wav">Download WAV ↓</a></>}</div>
         {!audioUrl && !generating && <div className="empty-wave">{[...Array(32)].map((_, i) => <i key={i} style={{ height: `${10 + (i * 17) % 38}px` }} />)}</div>}
       </section>
-      <footer><span>SONORA · VOICE STUDIO</span><span>Stream your narration · Download as WAV</span></footer>
+      <footer><span>SONORA · VOICE STUDIO</span><span>Preview your narration · Download as WAV</span></footer>
     </main>
   </div>;
 }

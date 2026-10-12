@@ -62,7 +62,9 @@ test('configuration excludes keys; validation and origin checks precede generati
   const base = await serve(t, async () => { calls++; });
   const config = await (await fetch(`${base}/api/config`)).json();
   assert.equal(config.configured, true);
+  assert.deepEqual(config.auth, { enabled: false, signedIn: false });
   assert.equal(config.voices.length, 30);
+  assert.equal((await fetch(`${base}/auth/google`, { redirect: 'manual' })).status, 503);
   assert.ok(!JSON.stringify(config).includes('test-only'));
   assert.equal((await post(base, { ...body, voice: 'unknown' })).status, 400);
   assert.equal((await post(base, { ...body, text: 'x'.repeat(1_000_001) })).status, 413);
@@ -92,10 +94,10 @@ test('origin checks use a configured fixed origin, never the request Host', asyn
   assert.equal(calls, 0);
 });
 
-test('server enforces one shared 1000-word daily quota across requests', async t => {
+test('server enforces a shared 50-word guest quota per IP', async t => {
   let calls = 0;
   const base = await serve(t, async () => { calls++; return Buffer.from([0, 0]); });
-  const text = Array(1000).fill('word').join(' ');
+  const text = Array(50).fill('word').join(' ');
   const first = await fetch(`${base}/api/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -103,8 +105,8 @@ test('server enforces one shared 1000-word daily quota across requests', async t
   });
   assert.equal(first.status, 200);
   const firstUsage = (await (await fetch(`${base}/api/config`)).json()).dailyWordQuota;
-  assert.equal(firstUsage.limit, 1000);
-  assert.equal(firstUsage.used, 1000);
+  assert.equal(firstUsage.limit, 50);
+  assert.equal(firstUsage.used, 50);
   assert.equal(firstUsage.remaining, 0);
 
   const next = await post(base, { ...body, text: 'one more word' });
@@ -113,6 +115,113 @@ test('server enforces one shared 1000-word daily quota across requests', async t
   assert.match(rejection.error, /Daily limit reached/);
   assert.equal(rejection.dailyWordQuota.remaining, 0);
   assert.equal(calls, 1);
+});
+
+test('Google sign-in validates OAuth state and grants a separate 1000-word account quota', async t => {
+  let authParameters;
+  let authNonce;
+  let invalidNonce = false;
+  const oauthClient = {
+    generateAuthUrl(parameters) {
+      authParameters = parameters;
+      const url = new URL('https://accounts.google.test/auth');
+      url.searchParams.set('state', parameters.state);
+      return url.toString();
+    },
+    async getToken(code) {
+      assert.equal(code, 'authorization-code');
+      return { tokens: { id_token: 'verified-id-token' } };
+    },
+    async verifyIdToken({ idToken, audience }) {
+      assert.equal(idToken, 'verified-id-token');
+      assert.equal(audience, 'test-client-id');
+      return { getPayload: () => ({ sub: 'google-account-123', nonce: invalidNonce ? 'wrong-nonce' : authNonce }) };
+    }
+  };
+  const base = await serve(t, async () => Buffer.from([0, 0]), {
+    apiKey: 'test-only',
+    model: DEFAULT_MODEL_ID,
+    googleClientId: 'test-client-id',
+    googleClientSecret: 'test-client-secret',
+    googleRedirectUri: 'https://studio.example/auth/google/callback',
+    sessionSecret: 'test-session-secret',
+    oauthClient
+  });
+  const start = await fetch(`${base}/auth/google`, { redirect: 'manual' });
+  assert.equal(start.status, 302);
+  const initialCookie = start.headers.getSetCookie()[0].split(';')[0];
+  assert.deepEqual(authParameters.scope, ['openid']);
+  assert.ok(authParameters.state);
+  const authorizationUrl = new URL(start.headers.get('location'));
+  assert.equal(authorizationUrl.searchParams.get('state'), authParameters.state);
+  authNonce = authorizationUrl.searchParams.get('nonce');
+  assert.ok(authNonce);
+  const rejected = await fetch(`${base}/auth/google/callback?code=authorization-code&state=wrong`, {
+    headers: { Cookie: initialCookie },
+    redirect: 'manual'
+  });
+  assert.equal(rejected.status, 400);
+  const callback = await fetch(`${base}/auth/google/callback?code=authorization-code&state=${authParameters.state}`, {
+    headers: { Cookie: initialCookie },
+    redirect: 'manual'
+  });
+  assert.equal(callback.status, 302);
+  const signedInCookie = callback.headers.getSetCookie()[0].split(';')[0];
+  const signedInConfig = await (await fetch(`${base}/api/config`, { headers: { Cookie: signedInCookie } })).json();
+  assert.deepEqual(signedInConfig.auth, { enabled: true, signedIn: true });
+  assert.equal(signedInConfig.dailyWordQuota.limit, 1000);
+
+  const userText = Array(51).fill('word').join(' ');
+  const accepted = await fetch(`${base}/api/generate`, {
+    method: 'POST',
+    headers: { Cookie: signedInCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...body, text: userText })
+  });
+  assert.equal(accepted.status, 200);
+  assert.equal((await (await fetch(`${base}/api/config`, { headers: { Cookie: signedInCookie } })).json()).dailyWordQuota.used, 51);
+  const overAccountLimit = await fetch(`${base}/api/generate`, {
+    method: 'POST',
+    headers: { Cookie: signedInCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...body, text: Array(950).fill('word').join(' ') })
+  });
+  assert.equal(overAccountLimit.status, 429);
+  const finalAccountWords = await fetch(`${base}/api/generate`, {
+    method: 'POST',
+    headers: { Cookie: signedInCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...body, text: Array(949).fill('word').join(' ') })
+  });
+  assert.equal(finalAccountWords.status, 200);
+  const accountLimit = await fetch(`${base}/api/generate`, {
+    method: 'POST',
+    headers: { Cookie: signedInCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...body, text: 'one' })
+  });
+  assert.equal(accountLimit.status, 429);
+  assert.equal((await accountLimit.json()).dailyWordQuota.remaining, 0);
+
+  const guestText = Array(51).fill('guest').join(' ');
+  const guest = await fetch(`${base}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...body, text: guestText })
+  });
+  assert.equal(guest.status, 429);
+  assert.equal((await guest.json()).dailyWordQuota.limit, 50);
+
+  const signOut = await fetch(`${base}/api/auth/logout`, { method: 'POST', headers: { Cookie: signedInCookie } });
+  assert.equal(signOut.status, 204);
+  const signedOutConfig = await (await fetch(`${base}/api/config`, { headers: { Cookie: signedInCookie } })).json();
+  assert.deepEqual(signedOutConfig.auth, { enabled: true, signedIn: false });
+  assert.equal(signedOutConfig.dailyWordQuota.limit, 50);
+  invalidNonce = true;
+  const retry = await fetch(`${base}/auth/google`, { redirect: 'manual' });
+  const retryCookie = retry.headers.getSetCookie()[0].split(';')[0];
+  authNonce = new URL(retry.headers.get('location')).searchParams.get('nonce');
+  const invalidIdentity = await fetch(`${base}/auth/google/callback?code=authorization-code&state=${authParameters.state}`, {
+    headers: { Cookie: retryCookie },
+    redirect: 'manual'
+  });
+  assert.equal(invalidIdentity.status, 400);
 });
 
 test('failed or incomplete synthesis never emits done or leaks errors', async t => {

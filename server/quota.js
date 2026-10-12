@@ -4,6 +4,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const DAILY_WORD_LIMIT = 1_000;
+export const GUEST_DAILY_WORD_LIMIT = 50;
+
+const limitForSubject = subjectType => subjectType === 'user' ? DAILY_WORD_LIMIT : GUEST_DAILY_WORD_LIMIT;
 
 const migrationsPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'migrations');
 const migrations = readdirSync(migrationsPath)
@@ -58,24 +61,25 @@ export function createPostgresDailyWordQuota({ pool, secret, now = () => new Dat
   const hashedSubject = (type, value) => createHmac('sha256', secret)
     .update(`${type}:${String(value)}`)
     .digest('hex');
-  const formatUsage = (used, day) => {
+  const formatUsage = (used, day, limit) => {
     const reset = new Date(`${day}T00:00:00.000Z`);
     reset.setUTCDate(reset.getUTCDate() + 1);
-    return { limit: DAILY_WORD_LIMIT, used, remaining: DAILY_WORD_LIMIT - used, resetsAt: reset.toISOString() };
+    const boundedUsed = Math.min(used, limit);
+    return { limit, used: boundedUsed, remaining: limit - boundedUsed, resetsAt: reset.toISOString() };
   };
-  const readUsage = async (subjectType, subjectHash, day) => {
+  const readUsage = async (subjectType, subjectHash, day, limit) => {
     const result = await pool.query(
       'SELECT words_used FROM daily_word_usage WHERE usage_date = $1 AND subject_type = $2 AND subject_hash = $3',
       [day, subjectType, subjectHash]
     );
-    return formatUsage(Number(result.rows[0]?.words_used ?? 0), day);
+    return formatUsage(Number(result.rows[0]?.words_used ?? 0), day, limit);
   };
 
   const getUsageFor = async (subjectType, subjectId) => {
     if (!['ip', 'user'].includes(subjectType) || subjectId == null || !String(subjectId)) throw new TypeError('Invalid quota subject.');
     await ready;
     const day = today();
-    return readUsage(subjectType, hashedSubject(subjectType, subjectId), day);
+    return readUsage(subjectType, hashedSubject(subjectType, subjectId), day, limitForSubject(subjectType));
   };
   const consumeFor = async (subjectType, subjectId, words) => {
     if (!['ip', 'user'].includes(subjectType) || subjectId == null || !String(subjectId)) throw new TypeError('Invalid quota subject.');
@@ -83,6 +87,7 @@ export function createPostgresDailyWordQuota({ pool, secret, now = () => new Dat
     await ready;
     const day = today();
     const hash = hashedSubject(subjectType, subjectId);
+    const limit = limitForSubject(subjectType);
     const result = await pool.query(
       `INSERT INTO daily_word_usage (usage_date, subject_type, subject_hash, words_used)
        VALUES ($1, $2, $3, $4)
@@ -90,12 +95,12 @@ export function createPostgresDailyWordQuota({ pool, secret, now = () => new Dat
        DO UPDATE SET words_used = daily_word_usage.words_used + EXCLUDED.words_used
        WHERE daily_word_usage.words_used + EXCLUDED.words_used <= $5
        RETURNING words_used`,
-      [day, subjectType, hash, words, DAILY_WORD_LIMIT]
+      [day, subjectType, hash, words, limit]
     );
     if (result.rows.length) {
-      return { allowed: true, dailyWordQuota: formatUsage(Number(result.rows[0].words_used), day) };
+      return { allowed: true, dailyWordQuota: formatUsage(Number(result.rows[0].words_used), day, limit) };
     }
-    return { allowed: false, dailyWordQuota: await readUsage(subjectType, hash, day) };
+    return { allowed: false, dailyWordQuota: await readUsage(subjectType, hash, day, limit) };
   };
   return {
     getUsageFor,
@@ -115,7 +120,9 @@ export function createMemoryDailyWordQuota({ secret, now = () => new Date() }) {
     const used = usage.get(key) ?? 0;
     const reset = new Date(`${day}T00:00:00.000Z`);
     reset.setUTCDate(reset.getUTCDate() + 1);
-    return { key, dailyWordQuota: { limit: DAILY_WORD_LIMIT, used, remaining: DAILY_WORD_LIMIT - used, resetsAt: reset.toISOString() } };
+    const limit = limitForSubject(type);
+    const boundedUsed = Math.min(used, limit);
+    return { key, dailyWordQuota: { limit, used: boundedUsed, remaining: limit - boundedUsed, resetsAt: reset.toISOString() } };
   };
   const getUsageFor = async (type, subjectId) => {
     if (!['ip', 'user'].includes(type) || subjectId == null || !String(subjectId)) throw new TypeError('Invalid quota subject.');
@@ -130,7 +137,7 @@ export function createMemoryDailyWordQuota({ secret, now = () => new Date() }) {
       usage.set(current.key, used);
       return {
         allowed: true,
-        dailyWordQuota: { ...current.dailyWordQuota, used, remaining: DAILY_WORD_LIMIT - used }
+        dailyWordQuota: { ...current.dailyWordQuota, used, remaining: current.dailyWordQuota.limit - used }
       };
   };
   return {
@@ -143,5 +150,5 @@ export function createMemoryDailyWordQuota({ secret, now = () => new Date() }) {
 
 export function createUnavailableDailyWordQuota() {
   const unavailable = async () => { throw new Error('PostgreSQL is required for daily quota storage.'); };
-  return { getUsage: unavailable, consume: unavailable };
+  return { getUsageFor: unavailable, consumeFor: unavailable, getUsage: unavailable, consume: unavailable };
 }
