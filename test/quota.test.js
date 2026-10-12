@@ -1,0 +1,78 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createPostgresDailyWordQuota } from '../server/quota.js';
+
+function createFakePostgresPool() {
+  const usage = new Map();
+  const migrations = new Set();
+  const calls = [];
+  const query = async (sql, values = []) => {
+      calls.push({ sql, values });
+      if (sql.includes('pg_advisory_lock') || sql.includes('pg_advisory_unlock') ||
+          sql.startsWith('CREATE TABLE IF NOT EXISTS sonora_schema_migrations') ||
+          sql.startsWith('CREATE TABLE IF NOT EXISTS daily_word_usage') ||
+          sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK' ||
+          sql.startsWith('DELETE FROM daily_word_usage')) return { rows: [] };
+      if (sql.includes('SELECT migration FROM sonora_schema_migrations')) {
+        return { rows: migrations.has(values[0]) ? [{ migration: values[0] }] : [] };
+      }
+      if (sql.includes('INSERT INTO sonora_schema_migrations')) {
+        migrations.add(values[0]);
+        return { rows: [] };
+      }
+      if (sql.includes('INSERT INTO daily_word_usage')) {
+        const [day, subjectType, subjectHash, words, limit] = values;
+        const key = `${day}:${subjectType}:${subjectHash}`;
+        const current = usage.get(key) ?? 0;
+        if (current + words > limit) return { rows: [] };
+        const wordsUsed = current + words;
+        usage.set(key, wordsUsed);
+        return { rows: [{ words_used: wordsUsed }] };
+      }
+      if (sql.includes('SELECT words_used FROM daily_word_usage')) {
+        const [day, subjectType, subjectHash] = values;
+        const wordsUsed = usage.get(`${day}:${subjectType}:${subjectHash}`);
+        return { rows: wordsUsed === undefined ? [] : [{ words_used: wordsUsed }] };
+      }
+      throw new Error(`Unexpected SQL query: ${sql}`);
+  };
+  const client = { query, release() {} };
+  return {
+    calls,
+    query,
+    async connect() { return client; }
+  };
+}
+
+test('PostgreSQL quota is atomic, daily, hashed, and supports future user subjects', async () => {
+  const pool = createFakePostgresPool();
+  let currentTime = new Date('2026-10-12T12:00:00.000Z');
+  const quota = createPostgresDailyWordQuota({
+    pool,
+    secret: 'stable-test-secret',
+    now: () => currentTime
+  });
+  const secondInstance = createPostgresDailyWordQuota({
+    pool,
+    secret: 'stable-test-secret',
+    now: () => currentTime
+  });
+  const userId = 'account-123';
+
+  const first = await quota.consumeFor('user', userId, 999);
+  assert.equal(first.allowed, true);
+  assert.equal(first.dailyWordQuota.remaining, 1);
+  const concurrent = await Promise.all([
+    quota.consumeFor('user', userId, 1),
+    secondInstance.consumeFor('user', userId, 1)
+  ]);
+  assert.equal(concurrent.filter(({ allowed }) => allowed).length, 1);
+  assert.equal((await secondInstance.getUsageFor('user', userId)).used, 1000);
+  assert.equal((await quota.getUsageFor('ip', userId)).used, 0);
+  assert.ok(pool.calls.some(({ sql }) => sql.includes("CHECK (subject_type IN ('ip', 'user'))")));
+  assert.ok(pool.calls.filter(({ sql }) => sql.includes('INSERT INTO daily_word_usage'))
+    .every(({ values }) => values[2] !== userId && /^[a-f0-9]{64}$/.test(values[2])));
+
+  currentTime = new Date('2026-10-13T00:00:00.000Z');
+  assert.equal((await quota.getUsageFor('user', userId)).used, 0);
+});

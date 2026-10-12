@@ -4,6 +4,7 @@ coverage/
 .nyc_output/
 .vercel/
 .render/
+.opencode/
 
 # Local secrets; keep the documented template tracked.
 .env
@@ -26,8 +27,4 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 .idea/
-.vscode/*
-!.vscode/extensions.json
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
+.vscode/
