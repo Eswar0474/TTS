@@ -8,6 +8,7 @@ coverage/
 
 # Local secrets; keep the documented template tracked.
 .env
+SECURITY-REVIEW.md
 .env.*
 !.env.example
 
