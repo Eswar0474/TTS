@@ -52,6 +52,7 @@ function App() {
   const [configStatus, setConfigStatus] = useState('loading');
   const [configError, setConfigError] = useState('');
   const [dailyWordQuota, setDailyWordQuota] = useState(null);
+  const [chargedDraftWords, setChargedDraftWords] = useState(0);
   const [voice, setVoice] = useState('');
   const [modelId, setModelId] = useState('');
   const [status, setStatus] = useState('idle');
@@ -138,6 +139,9 @@ function App() {
    const requestText = buildModulatedText(text, expressionTags);
    const count = requestText.length;
    const wordCount = requestText.match(/\S+/gu)?.length ?? 0;
+   const draftWordsToCharge = Math.max(wordCount - chargedDraftWords, 0);
+   const projectedDailyWords = dailyWordQuota ? dailyWordQuota.used + draftWordsToCharge : 0;
+   const projectedWordsRemaining = dailyWordQuota ? Math.max(dailyWordQuota.remaining - draftWordsToCharge, 0) : 0;
   const overLimit = limit != null && count > limit;
    const overDailyLimit = dailyWordQuota != null && !dailyWordQuota.unlimited && wordCount > dailyWordQuota.remaining;
    const quotaExhausted = dailyWordQuota?.remaining === 0 && !dailyWordQuota?.unlimited;
@@ -183,6 +187,7 @@ function App() {
         if (event.type === 'start') {
           if (started || event.sampleRate !== SAMPLE_RATE || !Number.isInteger(event.totalChunks) || event.totalChunks <= 0 || !validDailyWordQuota(event.dailyWordQuota)) throw new Error('Invalid stream start.');
           setDailyWordQuota(event.dailyWordQuota);
+          setChargedDraftWords(wordCount);
           started = true; total = event.totalChunks; setProgress({ completed: 0, total }); return;
         }
         if (!started) throw new Error('Audio stream did not begin with a start event.');
@@ -234,12 +239,12 @@ function App() {
       <section className="hero"><div><p className="eyebrow">SONORA · CREATIVE AUDIO</p><h1>Bring your words<br /><em>to life.</em></h1><p className="hero-copy">Shape the delivery, choose a voice, and create a downloadable WAV narration from your script.</p></div><div className="hero-orb"><div className="orb-core" /><div className="wave wave-one" /><div className="wave wave-two" /><div className="wave wave-three" /></div></section>
       <section className="studio-grid">
          <div className="panel input-panel">
-           <div className="panel-heading"><div><span className="step">01</span><h2>Write your script</h2></div><button className="sample-button" disabled={generating || quotaExhausted} onClick={() => setText(SAMPLE)}>Use sample <span>↗</span></button></div>
-           <div className="expression-bar"><label className="expression-entry"><span className="expression-label">EMOTION & DELIVERY TAGS</span><input aria-label="Emotion and delivery tags" type="text" value={expressionTags} disabled={generating || quotaExhausted} onChange={(e) => setExpressionTags(e.target.value)} placeholder="e.g. Warm, excited, whispering" /><small>{buildModulatedText('', expressionTags).trim() || 'No tags added'}</small></label></div>
+           <div className="panel-heading"><div><span className="step">01</span><h2>Write your script</h2></div><button className="sample-button" disabled={generating || quotaExhausted} onClick={() => { setText(SAMPLE); setChargedDraftWords(0); }}>Use sample <span>↗</span></button></div>
+           <div className="expression-bar"><label className="expression-entry"><span className="expression-label">EMOTION & DELIVERY TAGS</span><input aria-label="Emotion and delivery tags" type="text" value={expressionTags} disabled={generating || quotaExhausted} onChange={(e) => { setExpressionTags(e.target.value); setChargedDraftWords(0); }} placeholder="e.g. Warm, excited, whispering" /><small>{buildModulatedText('', expressionTags).trim() || 'No tags added'}</small></label></div>
            <p className="expression-hint">Add tags separated by commas.</p>
-           <div className={`textarea-wrap ${quotaExhausted ? 'quota-locked' : ''}`}><textarea aria-label="Script" aria-disabled={quotaExhausted} disabled={generating || quotaExhausted} onChange={(e) => setText(e.target.value)} value={text} placeholder="Write or paste your script…" />{quotaExhausted && <p className="quota-lock-message" role="status">Daily limit reached. Resets at midnight UTC.</p>}<div className="textarea-footer"><span className={overLimit ? 'counter over' : 'counter'}>{count.toLocaleString()} <span>/ {limit ? limit.toLocaleString() : '—'} characters</span></span><span className="tag-hint">Tags included</span></div></div>
+           <div className={`textarea-wrap ${quotaExhausted ? 'quota-locked' : ''}`}><textarea aria-label="Script" aria-disabled={quotaExhausted} disabled={generating || quotaExhausted} onChange={(e) => { setText(e.target.value); setChargedDraftWords(0); }} value={text} placeholder="Write or paste your script…" />{quotaExhausted && <p className="quota-lock-message" role="status">Daily limit reached. Resets at midnight UTC.</p>}<div className="textarea-footer"><span className={overLimit ? 'counter over' : 'counter'}>{count.toLocaleString()} <span>/ {limit ? limit.toLocaleString() : '—'} characters</span></span><span className="word-counter" aria-label={`${wordCount.toLocaleString()} words in draft, including tags`}>{wordCount.toLocaleString()} words <span>incl. tags</span></span><span className="tag-hint">Tags included</span></div></div>
            <div className="quota-track"><div style={{ width: `${percent}%` }} /></div>
-           <p className={overDailyLimit ? 'daily-quota over' : 'daily-quota'}>{dailyWordQuota?.unlimited ? 'Admin access · daily word cap bypassed' : dailyWordQuota ? `${dailyWordQuota.used.toLocaleString()} / ${dailyWordQuota.limit.toLocaleString()} words today · ${dailyWordQuota.remaining.toLocaleString()} left · resets 00:00 UTC` : 'Loading daily allowance…'}</p>
+           <p className={overDailyLimit ? 'daily-quota over' : 'daily-quota'}>{dailyWordQuota?.unlimited ? 'Admin access · daily word cap bypassed' : dailyWordQuota ? `${projectedDailyWords.toLocaleString()} / ${dailyWordQuota.limit.toLocaleString()} words incl. draft · ${projectedWordsRemaining.toLocaleString()} left · resets 00:00 UTC` : 'Loading daily allowance…'}</p>
            <p className="quota-disclaimer">{dailyWordQuota?.unlimited ? 'Per-request and provider safety limits still apply.' : config?.auth.signedIn ? 'Google account allowance · 1,000 words each UTC day.' : 'Guest allowance · 50 words each UTC day.'}</p>
            {overLimit && <p className="error-text">Character limit reached. Shorten your script.</p>}{overDailyLimit && <p className="error-text">Daily word limit reached. Shorten your script or wait for reset.</p>}
          </div>

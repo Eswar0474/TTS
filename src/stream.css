@@ -24,3 +24,66 @@
 .textarea-footer { flex-wrap: wrap; gap: 8px; }
 button:disabled { cursor: not-allowed; }
 @media (max-width: 650px) { .output-controls { justify-content: flex-start; width: 100%; } .tag-hint { font-size: 10px; } }
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: blur(14px);
+}
+
+.textarea-wrap textarea { font-size: 16px; }
+.expression-label { font-size: 11px; }
+.textarea-footer { font-size: 12px; }
+.word-counter { color: var(--accent-bright); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.word-counter span { color: #87827b; }
+.daily-quota { font-size: 13px; line-height: 1.5; }
+.quota-disclaimer, .expression-hint { font-size: 12px; line-height: 1.5; }
+.settings-panel label { font-size: 11px; }
+
+@media (max-width: 800px) {
+  .studio-grid { grid-template-columns: minmax(0, 1fr); }
+  .workspace { width: min(100% - 32px, 620px); }
+}
+
+@media (max-width: 650px) {
+  .topbar { height: 62px; padding-inline: 14px; gap: 8px; }
+  .brand { gap: 7px; font-size: 20px; }
+  .brand-mark { font-size: 20px; }
+  .badge { padding: 4px 6px; font-size: 8px; }
+  .topbar-right { flex: 0 0 auto; gap: 6px; }
+  .account-button { min-height: 42px; padding: 9px 11px; font-size: 13px; white-space: nowrap; }
+  .workspace { width: calc(100% - 28px); }
+  .hero { min-height: 210px; padding: 28px 4px 24px; }
+  .hero h1 { font-size: clamp(38px, 10vw, 48px); }
+  .hero-copy { max-width: 280px; font-size: 14px; }
+  .eyebrow { font-size: 10px; }
+  .hero-orb { width: 76px; height: 76px; margin-left: 4px; }
+  .panel { padding: 17px; }
+  .panel h2, .output-label h2 { font-size: 18px; }
+  .panel-heading { gap: 8px; }
+  .sample-button { min-height: 42px; padding: 9px 11px; font-size: 13px; }
+  .expression-entry input, .settings-panel select { min-height: 46px; font-size: 16px; }
+  .expression-entry small, .expression-hint, .engine-description, .config-status { font-size: 13px; }
+  .textarea-wrap textarea { min-height: 200px; padding: 15px; font-size: 16px; }
+  .textarea-footer { align-items: flex-start; font-size: 12px; }
+  .tag-hint { font-size: 12px; }
+  .daily-quota { font-size: 13px; }
+  .quota-disclaimer { font-size: 12px; }
+  .settings-panel label { font-size: 12px; }
+  .model-note { font-size: 13px; line-height: 1.5; }
+  .voice-preview strong { font-size: 14px; }
+  .voice-preview small { font-size: 12px; }
+  .generate-button { min-height: 50px; font-size: 15px; }
+  .output-label p { font-size: 13px; }
+  .output-controls audio { width: 100%; }
+  .auth-error { top: calc(100% + 6px); right: 14px; max-width: calc(100vw - 28px); }
+  footer { font-size: 10px; }
+}
+
+@media (max-width: 380px) {
+  .badge { display: none; }
+  .topbar { padding-inline: 12px; }
+  .account-button { padding-inline: 9px; font-size: 12px; }
+  .textarea-footer { column-gap: 6px; }
+}
