@@ -11,6 +11,8 @@ const SAMPLE = 'The future is not a destination. It is a rhythm we learn to move
 const validDailyWordQuota = (quota) => quota && [50, 1000].includes(quota.limit) &&
   Number.isSafeInteger(quota.used) && quota.used >= 0 && quota.used <= quota.limit &&
   quota.remaining === quota.limit - quota.used &&
+  (quota.unlimited === undefined || typeof quota.unlimited === 'boolean') &&
+  (quota.unlimited !== true || quota.limit === 1000) &&
   typeof quota.resetsAt === 'string' && Number.isFinite(Date.parse(quota.resetsAt));
 
 function validateConfig(data) {
@@ -19,7 +21,10 @@ function validateConfig(data) {
   if (!data || typeof data.configured !== 'boolean' || !positiveLimit(data.characterLimit) || data.streaming !== true ||
     !validDailyWordQuota(data.dailyWordQuota) ||
     !data.auth || typeof data.auth.enabled !== 'boolean' || typeof data.auth.signedIn !== 'boolean' ||
+    typeof data.auth.admin !== 'boolean' ||
     (data.auth.signedIn && !data.auth.enabled) ||
+    (data.auth.admin && !data.auth.signedIn) ||
+    Boolean(data.dailyWordQuota.unlimited) !== data.auth.admin ||
     data.dailyWordQuota.limit !== (data.auth.signedIn ? 1000 : 50) ||
     !Array.isArray(data.voices) || !data.voices.every(nonempty) || new Set(data.voices).size !== data.voices.length ||
     !Array.isArray(data.models) || !data.models.length || !data.models.every((model) => model &&
@@ -134,8 +139,8 @@ function App() {
    const count = requestText.length;
    const wordCount = requestText.match(/\S+/gu)?.length ?? 0;
   const overLimit = limit != null && count > limit;
-   const overDailyLimit = dailyWordQuota != null && wordCount > dailyWordQuota.remaining;
-   const quotaExhausted = dailyWordQuota?.remaining === 0;
+   const overDailyLimit = dailyWordQuota != null && !dailyWordQuota.unlimited && wordCount > dailyWordQuota.remaining;
+   const quotaExhausted = dailyWordQuota?.remaining === 0 && !dailyWordQuota?.unlimited;
    const ready = configStatus === 'ready' && config?.configured && voice && selectedModel;
    const progressPercent = progress.total ? Math.round((progress.completed / progress.total) * 100) : 0;
   const percent = limit ? Math.min((count / limit) * 100, 100) : 0;
@@ -221,7 +226,7 @@ function App() {
 
   return <div className="app-shell">
     <header className="topbar"><div className="brand"><span className="brand-mark">◒</span><span>sonora</span><span className="badge">VOICE STUDIO</span></div><div className="topbar-right"><span>Text-to-speech workspace</span>{config?.auth.signedIn
-      ? <button className="account-button" onClick={signOut}>Sign out</button>
+      ? <>{config.auth.admin && <span className="admin-pill">ADMIN</span>}<button className="account-button" onClick={signOut}>Sign out</button></>
       : config?.auth.enabled
         ? <a className="account-button" href="/auth/google">Sign in with Google</a>
         : <button className="account-button" disabled title="Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI in Render to enable Google sign-in.">Sign in with Google</button>}</div>{authActionError && <p className="auth-error" role="alert">{authActionError}</p>}</header>
@@ -234,8 +239,8 @@ function App() {
            <p className="expression-hint">Add tags separated by commas.</p>
            <div className={`textarea-wrap ${quotaExhausted ? 'quota-locked' : ''}`}><textarea aria-label="Script" aria-disabled={quotaExhausted} disabled={generating || quotaExhausted} onChange={(e) => setText(e.target.value)} value={text} placeholder="Write or paste your script…" />{quotaExhausted && <p className="quota-lock-message" role="status">Daily limit reached. Resets at midnight UTC.</p>}<div className="textarea-footer"><span className={overLimit ? 'counter over' : 'counter'}>{count.toLocaleString()} <span>/ {limit ? limit.toLocaleString() : '—'} characters</span></span><span className="tag-hint">Tags included</span></div></div>
            <div className="quota-track"><div style={{ width: `${percent}%` }} /></div>
-           <p className={overDailyLimit ? 'daily-quota over' : 'daily-quota'}>{dailyWordQuota ? `${dailyWordQuota.used.toLocaleString()} / ${dailyWordQuota.limit.toLocaleString()} words today · ${dailyWordQuota.remaining.toLocaleString()} left · resets 00:00 UTC` : 'Loading daily allowance…'}</p>
-           <p className="quota-disclaimer">{config?.auth.signedIn ? 'Google account allowance · 1,000 words each UTC day.' : 'Guest allowance · 50 words each UTC day.'}</p>
+           <p className={overDailyLimit ? 'daily-quota over' : 'daily-quota'}>{dailyWordQuota?.unlimited ? 'Admin access · daily word cap bypassed' : dailyWordQuota ? `${dailyWordQuota.used.toLocaleString()} / ${dailyWordQuota.limit.toLocaleString()} words today · ${dailyWordQuota.remaining.toLocaleString()} left · resets 00:00 UTC` : 'Loading daily allowance…'}</p>
+           <p className="quota-disclaimer">{dailyWordQuota?.unlimited ? 'Per-request and provider safety limits still apply.' : config?.auth.signedIn ? 'Google account allowance · 1,000 words each UTC day.' : 'Guest allowance · 50 words each UTC day.'}</p>
            {overLimit && <p className="error-text">Character limit reached. Shorten your script.</p>}{overDailyLimit && <p className="error-text">Daily word limit reached. Shorten your script or wait for reset.</p>}
          </div>
         <aside className="panel settings-panel">

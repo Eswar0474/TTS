@@ -4,7 +4,7 @@ import session from 'express-session';
 import connectPgSimple from 'connect-pg-simple';
 import { OAuth2Client } from 'google-auth-library';
 import { createServer } from 'node:http';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { GoogleGenAI, Modality } from '@google/genai';
 import { Pool } from 'pg';
 import { fileURLToPath } from 'node:url';
@@ -117,6 +117,19 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
   const googleClientSecret = config.googleClientSecret ?? process.env.GOOGLE_CLIENT_SECRET;
   const googleRedirectUri = config.googleRedirectUri ?? process.env.GOOGLE_REDIRECT_URI;
   const sessionSecret = config.sessionSecret ?? process.env.SESSION_SECRET;
+  const configuredAdminEmails = config.adminGoogleEmails ?? process.env.ADMIN_GOOGLE_EMAILS ?? '';
+  const adminEmailEntries = Array.isArray(configuredAdminEmails)
+    ? configuredAdminEmails
+    : String(configuredAdminEmails).split(',');
+  const adminGoogleEmails = new Set(adminEmailEntries
+    .map(email => String(email).trim().toLowerCase())
+    .filter(Boolean));
+  if ([...adminGoogleEmails].some(email => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+    throw new Error('ADMIN_GOOGLE_EMAILS must contain valid comma-separated email addresses.');
+  }
+  const adminPolicyVersion = createHash('sha256')
+    .update(JSON.stringify([...adminGoogleEmails].sort()))
+    .digest('hex');
   const googleSettings = [googleClientId, googleClientSecret, googleRedirectUri];
   if (googleSettings.some(Boolean) && !googleSettings.every(Boolean)) {
     throw new Error('GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI must all be configured together.');
@@ -199,15 +212,21 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
   }
   // 1M characters, including JSON unicode escapes, fit within this bound.
   app.use(express.json({ limit: '8mb' }));
+  const isAdmin = req => Boolean(req.session?.isAdmin &&
+    req.session.adminPolicyVersion === adminPolicyVersion);
   const quotaSubject = req => req.session?.userId
     ? { type: 'user', id: req.session.userId }
     : { type: 'ip', id: req.ip };
   const readDailyQuota = req => {
     const subject = quotaSubject(req);
-    return dailyWordQuota.getUsageFor(subject.type, subject.id);
+    return dailyWordQuota.getUsageFor(subject.type, subject.id).then(quota =>
+      isAdmin(req) ? { ...quota, unlimited: true } : quota);
   };
   const reserveDailyQuota = (req, words) => {
     const subject = quotaSubject(req);
+    if (isAdmin(req)) {
+      return readDailyQuota(req).then(dailyWordQuota => ({ allowed: true, dailyWordQuota }));
+    }
     return dailyWordQuota.consumeFor(subject.type, subject.id, words);
   };
   app.get('/auth/google', (req, res) => {
@@ -222,7 +241,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
       try {
         const url = new URL(oauthClient.generateAuthUrl({
           access_type: 'online',
-          scope: ['openid'],
+          scope: ['openid', 'email'],
           state,
           prompt: 'select_account'
         }));
@@ -272,6 +291,10 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
     try {
       await new Promise((resolve, reject) => req.session.regenerate(error => error ? reject(error) : resolve()));
       req.session.userId = payload.sub;
+      req.session.isAdmin = payload.email_verified === true &&
+        typeof payload.email === 'string' &&
+        adminGoogleEmails.has(payload.email.trim().toLowerCase());
+      req.session.adminPolicyVersion = adminPolicyVersion;
       await new Promise((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()));
       return res.redirect('/');
     } catch (error) {
@@ -315,7 +338,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
         models: MODELS,
         characterLimit: defaultModel?.characterLimit ?? MODELS[0].characterLimit,
         voices: VOICES, streaming: true, dailyWordQuota: dailyQuota,
-        auth: { enabled: oauthEnabled, signedIn }
+        auth: { enabled: oauthEnabled, signedIn, admin: signedIn && isAdmin(req) }
       });
     } catch (error) {
       logger.error('[sonora] Daily word quota storage failed', error);
