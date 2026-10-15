@@ -5,6 +5,7 @@ import path from 'node:path';
 // SITE_URL / config.siteUrl is an explicit bare origin, independent of request headers.
 // The project's canonical production origin defaults to https://sonora.rawse.in.
 export const DEFAULT_SITE_URL = 'https://sonora.rawse.in';
+export const DEFAULT_GOOGLE_SITE_VERIFICATION = 'WKcjy6CTtDshP2gWiMossBKitVn-jvi6uJPzpugyFSE';
 const TITLE = 'Sonora Voice Studio — AI Text to Speech & Audio';
 const DESCRIPTION = 'Turn scripts into expressive AI voice narrations with Sonora Voice Studio. Choose a voice, preview speech, and export MP3, WAV, FLAC, AAC, or OGG audio.';
 const GUIDE_TITLE = 'How It Works & FAQ — Sonora Voice Studio';
@@ -106,7 +107,12 @@ export function privateNoindex(req, res, next) {
   next();
 }
 
-export function createSeoRouter({ publicDir, siteUrl = DEFAULT_SITE_URL, googleSiteVerification, logger = console }) {
+export function createSeoRouter({
+  publicDir,
+  siteUrl = DEFAULT_SITE_URL,
+  googleSiteVerification = DEFAULT_GOOGLE_SITE_VERIFICATION,
+  logger = console
+}) {
   const origin = canonicalOrigin(siteUrl);
   const home = `${origin}/`;
   const guide = `${origin}/how-it-works`;

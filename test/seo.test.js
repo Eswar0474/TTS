@@ -163,7 +163,7 @@ test('homepage replaces just marked head with public metadata and safely escaped
   assert.ok(!sitemap.includes('attacker.invalid'));
 });
 
-test('the documented canonical default omits optional ownership metadata', async t => {
+test('an explicitly blank ownership token omits optional metadata', async t => {
   const original = process.env.SITE_URL;
   delete process.env.SITE_URL;
   t.after(() => { if (original === undefined) delete process.env.SITE_URL; else process.env.SITE_URL = original; });
@@ -173,6 +173,18 @@ test('the documented canonical default omits optional ownership metadata', async
   assert.ok(html.includes('<link rel="canonical" href="https://sonora.rawse.in/" />'));
   assert.ok(!html.includes('google-site-verification'));
   assert.ok((await (await fetch(`${base}/robots.txt`)).text()).includes('Sitemap: https://sonora.rawse.in/sitemap.xml'));
+});
+
+test('the configured Search Console token is included when no environment override is set', async t => {
+  const original = process.env.GOOGLE_SITE_VERIFICATION;
+  delete process.env.GOOGLE_SITE_VERIFICATION;
+  t.after(() => {
+    if (original === undefined) delete process.env.GOOGLE_SITE_VERIFICATION;
+    else process.env.GOOGLE_SITE_VERIFICATION = original;
+  });
+  const { base } = await serve(t);
+  const html = await (await fetch(`${base}/`)).text();
+  assert.match(html, /<meta name="google-site-verification" content="WKcjy6CTtDshP2gWiMossBKitVn-jvi6uJPzpugyFSE" \/>/);
 });
 
 test('SITE_URL env and config.siteUrl give stable origin with config taking precedence', async t => {

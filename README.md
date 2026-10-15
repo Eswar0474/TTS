@@ -51,8 +51,8 @@ Do not submit while the homepage returns 503, robots disallows the whole site, o
 
 1. Open [Google Search Console](https://search.google.com/search-console) with the Google account that manages the website.
 2. Add a **URL-prefix** property for `https://sonora.rawse.in/` (use the actual `SITE_URL` if different).
-3. Choose **HTML tag** verification. From Google's `<meta name="google-site-verification" content="...">`, copy **only the content value** into the service environment variable `GOOGLE_SITE_VERIFICATION`. This is a public ownership token, not an OAuth client secret or API key. Do not paste the whole tag.
-4. Redeploy/restart, confirm that tag appears in the homepage's View Source, then click **Verify** in Search Console. Keep the value configured after verification. Alternatively, use Google's DNS verification method if you manage the domain's DNS.
+3. Choose **HTML tag** verification. The provided token is the app's default `GOOGLE_SITE_VERIFICATION` value and is rendered into public page metadata; it is a public ownership token, not an OAuth client secret or API key. For a different property token, set only its content value in the service environment variable `GOOGLE_SITE_VERIFICATION`.
+4. Redeploy/restart, confirm that the `google-site-verification` meta tag appears in the homepage's View Source, then click **Verify** in Search Console. Keep the value configured after verification. Alternatively, use Google's DNS verification method if you manage the domain's DNS.
 
 ### 4. Submit and monitor
 
