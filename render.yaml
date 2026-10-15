@@ -14,6 +14,9 @@ services:
         value: 0.0.0.0
       - key: TRUST_PROXY
         value: "1"
+      # Change this when deploying on a different production domain.
+      - key: SITE_URL
+        value: "https://sonora.rawse.in"
       - key: GEMINI_API_KEY
         sync: false
       - key: GOOGLE_CLIENT_ID

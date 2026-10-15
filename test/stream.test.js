@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createApp, DEFAULT_MODEL_ID } from '../server/index.js';
 import { createMemoryDailyWordQuota } from '../server/quota.js';
-import { decodeBase64PCM, pcmToFloat32, encodeWav, createNDJSONParser } from '../src/audio.js';
+import { MAX_AUDIO_BYTES, MAX_STREAM_WIRE_BYTES, decodeBase64PCM, pcmToFloat32, encodeWav, createNDJSONParser } from '../src/audio.js';
 
 async function serve(t, synthesize, config = { apiKey: 'test-only', model: DEFAULT_MODEL_ID }, logger = console) {
   const quotaStore = createMemoryDailyWordQuota({ secret: 'test-quota-secret' });
@@ -18,12 +18,14 @@ const post = (base, value = body) => fetch(`${base}/api/generate/stream`, {
 });
 
 test('PCM little-endian conversion and complete WAV preserve samples', () => {
+  assert.ok(MAX_STREAM_WIRE_BYTES > MAX_AUDIO_BYTES);
   const pcm = decodeBase64PCM(Buffer.from([0, 128, 0, 0, 255, 127]).toString('base64'));
   assert.deepEqual([...pcmToFloat32(pcm)], [-1, 0, 32767 / 32768]);
   const wav = encodeWav([pcm]);
   assert.equal(new DataView(wav.buffer).getUint32(24, true), 24000);
   assert.deepEqual(wav.slice(44), pcm);
   assert.throws(() => decodeBase64PCM('AA=='));
+  assert.throws(() => decodeBase64PCM('AAB='));
   assert.throws(() => encodeWav([]));
 });
 

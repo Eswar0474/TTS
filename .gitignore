@@ -5,6 +5,8 @@ coverage/
 .vercel/
 .render/
 .opencode/
+# Keep chat attachments private even if the broader workspace ignore rule changes.
+.opencode/omnirush/inbox/chat-attachments/
 
 # Local secrets; keep the documented template tracked.
 .env

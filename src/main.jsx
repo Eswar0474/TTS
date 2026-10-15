@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { SAMPLE_RATE, MAX_AUDIO_BYTES, decodeBase64PCM, encodeWav, createNDJSONParser } from './audio.js';
+import { SAMPLE_RATE, MAX_AUDIO_BYTES, MAX_STREAM_WIRE_BYTES, decodeBase64PCM, encodeWav, createNDJSONParser } from './audio.js';
 import './styles.css';
 import './stream.css';
 import { getAvailability } from './availability.js';
@@ -306,7 +306,7 @@ function App() {
         if (!current()) return;
         if (result.done) break;
         wireBytes += result.value.byteLength;
-        if (wireBytes > MAX_AUDIO_BYTES) throw new Error('Stream exceeds the 128 MiB safety limit.');
+           if (wireBytes > MAX_STREAM_WIRE_BYTES) throw new Error('Stream exceeds the wire safety limit.');
         parser.push(decoder.decode(result.value, { stream: true }));
       }
       parser.push(decoder.decode()); parser.finish();
@@ -327,13 +327,13 @@ function App() {
   }
 
   return <div className="app-shell">
-    <header className="topbar"><div className="brand"><span className="brand-mark">◒</span><span>sonora</span><span className="badge">VOICE STUDIO</span></div><div className="topbar-right"><span>Text-to-speech workspace</span>{config?.auth.signedIn
+     <header className="topbar"><div className="brand"><span className="brand-mark">◒</span><span>sonora</span><span className="badge">VOICE STUDIO</span></div><div className="topbar-right"><span>Text-to-speech workspace</span><a className="help-link" href="/how-it-works">How it works &amp; FAQ</a>{config?.auth.signedIn
       ? <>{config.auth.admin && <span className="admin-pill">ADMIN</span>}<button className="account-button" onClick={signOut}>Sign out</button></>
       : config?.auth.enabled
         ? <a className="account-button" href="/auth/google">Sign in with Google</a>
         : <button className="account-button" disabled title="Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI in Render to enable Google sign-in.">Sign in with Google</button>}</div>{authActionError && <p className="auth-error" role="alert">{authActionError}</p>}</header>
     <main className="workspace">
-      <section className="hero"><div><p className="eyebrow">SONORA · CREATIVE AUDIO</p><h1>Bring your words<br /><em>to life.</em></h1><p className="hero-copy">Shape the delivery, choose a voice, and download your narration in your preferred format.</p></div><div className="hero-orb"><div className="orb-core" /><div className="wave wave-one" /><div className="wave wave-two" /><div className="wave wave-three" /></div></section>
+      <section className="hero" id="studio"><div><p className="eyebrow">SONORA · CREATIVE AUDIO</p><h1>AI text to speech<br /><em>with Sonora.</em></h1><p className="hero-copy">Turn your script into expressive voice narration. Choose a voice, guide its delivery with tags, preview the result, and export audio.</p></div><div className="hero-orb"><div className="orb-core" /><div className="wave wave-one" /><div className="wave wave-two" /><div className="wave wave-three" /></div></section>
       <section className="studio-grid">
          <div className="panel input-panel">
            <div className="panel-heading"><div><span className="step">01</span><h2>Write your script</h2></div><button className="sample-button" disabled={generating || signedInQuotaExhausted} onClick={() => { setText(SAMPLE); setChargedDraftWords(0); }}>Use sample <span>↗</span></button></div>
@@ -371,7 +371,6 @@ function App() {
         {downloadError && <p className="error-text download-error" role="alert">{downloadError}</p>}
         {!audioUrl && !generating && <div className="empty-wave">{[...Array(32)].map((_, i) => <i key={i} style={{ height: `${10 + (i * 17) % 38}px` }} />)}</div>}
       </section>
-      <footer><span>SONORA · VOICE STUDIO</span><span>Preview your narration · Export MP3, WAV, FLAC, AAC, or OGG</span></footer>
     </main>
     {authPrompt && <div className="auth-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAuthPrompt(null); }}><section className="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title"><button className="modal-close" aria-label="Close dialog" onClick={() => setAuthPrompt(null)}>×</button><span className="modal-eyebrow">{authPrompt === 'quota' ? 'DAILY ALLOWANCE' : 'MORE AUDIO FORMATS'}</span><h2 id="auth-modal-title">{authPrompt === 'quota' ? 'Keep creating with Google' : 'Unlock every format'}</h2><p>{authPrompt === 'quota' ? (quotaExhausted ? 'Your guest word allowance is used up. Sign in for a separate 1,000-word daily allowance.' : 'This script is over your remaining guest words. Sign in for a separate 1,000-word daily allowance.') : 'MP3 is available to everyone. Sign in with Google to download WAV, FLAC, AAC, and OGG.'}</p>{config?.auth.enabled ? <a className="account-button modal-sign-in" href="/auth/google" target="_blank" rel="noreferrer" onClick={() => { authPopupRequestedRef.current = true; }}>Sign in with Google</a> : <button className="account-button modal-sign-in" disabled title="Google sign-in is not configured on this server.">Google sign-in unavailable</button>}<button className="modal-dismiss" onClick={() => setAuthPrompt(null)}>Continue as guest</button></section></div>}
   </div>;

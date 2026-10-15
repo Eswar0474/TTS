@@ -4,7 +4,7 @@ import session from 'express-session';
 import connectPgSimple from 'connect-pg-simple';
 import { OAuth2Client } from 'google-auth-library';
 import { createServer } from 'node:http';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { GoogleGenAI, Modality } from '@google/genai';
 import { Pool } from 'pg';
 import { fileURLToPath } from 'node:url';
@@ -16,17 +16,119 @@ import {
   DAILY_WORD_LIMIT,
   GUEST_DAILY_WORD_LIMIT
 } from './quota.js';
+import { createSeoRouter, privateNoindex, DEFAULT_SITE_URL } from './seo.js';
 export { DAILY_WORD_LIMIT };
 export { GUEST_DAILY_WORD_LIMIT };
 
 const publicDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist');
 const CHARACTER_LIMIT = 1_000_000;
-const MAX_AUDIO_BYTES = 128 * 1024 * 1024;
+export const MAX_AUDIO_BYTES = 128 * 1024 * 1024;
+// Base64 expands PCM by 4/3; leave a bounded allowance for NDJSON event framing.
+export const MAX_STREAM_WIRE_BYTES = Math.ceil(MAX_AUDIO_BYTES / 3) * 4 + 4 * 1024 * 1024;
 const MAX_STREAM_BUFFER = 1024 * 1024;
+const GENERATION_RATE_WINDOW_MS = 10 * 60 * 1000;
+const DEFAULT_GENERATION_RATE_LIMIT = 12;
+const MAX_RATE_BUCKETS = 10_000;
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "object-src 'none'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "font-src 'self'",
+  "img-src 'self' data: blob:",
+  "connect-src 'self'",
+  "media-src 'self' blob:",
+  "worker-src 'self' blob:"
+].join('; ');
 export const countWords = (text) => text.match(/\S+/gu)?.length ?? 0;
 const validatePcm = (pcm) => {
   if (!Buffer.isBuffer(pcm) || !pcm.length || pcm.length % 2) throw new Error('Invalid PCM audio frame.');
 };
+
+const base64Value = code => {
+  if (code >= 65 && code <= 90) return code - 65;
+  if (code >= 97 && code <= 122) return code - 71;
+  if (code >= 48 && code <= 57) return code + 4;
+  if (code === 43) return 62;
+  if (code === 47) return 63;
+  return -1;
+};
+
+export function decodeBase64PCM(data, maxBytes = MAX_AUDIO_BYTES) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 2 || typeof data !== 'string' || !data.length || data.length % 4 !== 0 ||
+      data.length > Math.ceil(maxBytes / 3) * 4) {
+    throw new Error('Invalid base64 PCM audio.');
+  }
+  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+  const payloadLength = data.length - padding;
+  for (let index = 0; index < payloadLength; index++) {
+    if (base64Value(data.charCodeAt(index)) < 0) throw new Error('Invalid base64 PCM audio.');
+  }
+  for (let index = payloadLength; index < data.length; index++) {
+    if (data[index] !== '=') throw new Error('Invalid base64 PCM audio.');
+  }
+  if (padding === 2 && (base64Value(data.charCodeAt(payloadLength - 1)) & 0x0f) !== 0) {
+    throw new Error('Invalid base64 PCM audio.');
+  }
+  if (padding === 1 && (base64Value(data.charCodeAt(payloadLength - 1)) & 0x03) !== 0) {
+    throw new Error('Invalid base64 PCM audio.');
+  }
+  const decodedLength = (data.length / 4) * 3 - padding;
+  if (!decodedLength || decodedLength > maxBytes || decodedLength % 2) throw new Error('Invalid PCM audio frame.');
+  const bytes = Buffer.from(data, 'base64');
+  if (bytes.length !== decodedLength) throw new Error('Invalid base64 PCM audio.');
+  validatePcm(bytes);
+  return bytes;
+}
+
+const safeErrorDetails = error => ({
+  name: error instanceof Error ? error.name : 'UnknownError',
+  code: typeof error?.code === 'string' || typeof error?.code === 'number' ? error.code : undefined,
+  status: Number.isInteger(error?.status) ? error.status : undefined
+});
+
+const logSafeError = (logger, message, error, details = {}) => {
+  logger.error?.(message, { ...safeErrorDetails(error), ...details });
+};
+
+const isLoopbackHost = host => /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i.test(host);
+
+const securityHeaders = (req, res, next) => {
+  res.set({
+    'Content-Security-Policy': CONTENT_SECURITY_POLICY,
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
+    'Cross-Origin-Resource-Policy': 'same-origin'
+  });
+  if (process.env.NODE_ENV === 'production') {
+    res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  next();
+};
+
+function securePostgresOptions(databaseUrl) {
+  let parsed;
+  try { parsed = new URL(databaseUrl); }
+  catch { throw new Error('DATABASE_URL must be a valid PostgreSQL URL.'); }
+  const sslMode = parsed.searchParams.get('sslmode')?.toLowerCase();
+  if (['allow', 'disable', 'prefer'].includes(sslMode)) {
+    throw new Error('Production PostgreSQL connections must use TLS; set DATABASE_URL sslmode=require or stronger.');
+  }
+  // Remove the URI mode so node-postgres cannot downgrade or override the
+  // explicit TLS policy below. The password and other query parameters remain
+  // in the connection string and are never logged.
+  parsed.searchParams.delete('sslmode');
+  const ca = process.env.DATABASE_SSL_CA;
+  return {
+    connectionString: parsed.toString(),
+    ssl: ca ? { rejectUnauthorized: true, ca } : { rejectUnauthorized: true }
+  };
+}
 
 // Retained as a request alias and compatibility limit, never sent upstream.
 export const DEFAULT_ENGINE = 'gemini-2.5-flash-native-audio-preview-12-2025';
@@ -91,6 +193,24 @@ export const splitIntoChunks = (input, maxWords = 180) => {
   });
 };
 
+// Preserve the input boundaries while attaching whitespace-only fragments to a
+// neighboring speech chunk so they never become provider turns of their own.
+export const getSpeechChunks = input => {
+  const chunks = splitIntoChunks(input);
+  const speech = [];
+  let whitespace = '';
+  for (const chunk of chunks) {
+    if (chunk.trim()) {
+      speech.push(whitespace + chunk);
+      whitespace = '';
+    } else {
+      whitespace += chunk;
+    }
+  }
+  if (whitespace && speech.length) speech[speech.length - 1] += whitespace;
+  return speech;
+};
+
 export function createApp({ synthesize, config = {}, logger = console, quotaStore } = {}) {
   // Capture configuration independently for every app, including test instances.
   const apiKey = config.apiKey ?? process.env.GEMINI_API_KEY;
@@ -100,9 +220,13 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
   const defaultModelId = defaultModel.id;
   const generate = synthesize ?? ((options) => synthesizeWithLiveApi({ ...options, apiKey }));
   let pool = config.pool;
-  if (!quotaStore && !pool && (config.databaseUrl || process.env.DATABASE_URL)) {
-    pool = new Pool({ connectionString: config.databaseUrl ?? process.env.DATABASE_URL });
-    pool.on('error', error => logger.error('[sonora] PostgreSQL pool error', error));
+  const databaseUrl = config.databaseUrl ?? process.env.DATABASE_URL;
+  if (!quotaStore && !pool && databaseUrl) {
+    const poolOptions = process.env.NODE_ENV === 'production'
+      ? securePostgresOptions(databaseUrl)
+      : { connectionString: databaseUrl };
+    pool = new Pool(poolOptions);
+    pool.on('error', error => logSafeError(logger, '[sonora] PostgreSQL pool error', error));
   }
   const quotaSecret = config.quotaSecret ?? process.env.DAILY_QUOTA_SECRET ?? apiKey ?? 'sonora-unconfigured';
   const dailyWordQuota = quotaStore ?? (pool
@@ -158,6 +282,37 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
     : null;
   const app = express();
   let active = 0;
+  const generationRateLimit = Number.isSafeInteger(config.generationRateLimit) && config.generationRateLimit > 0
+    ? config.generationRateLimit : DEFAULT_GENERATION_RATE_LIMIT;
+  const generationRateWindow = Number.isSafeInteger(config.generationRateWindowMs) && config.generationRateWindowMs > 0
+    ? config.generationRateWindowMs : GENERATION_RATE_WINDOW_MS;
+  const generationBuckets = new Map();
+  let lastRateSweep = 0;
+  const takeGenerationSlot = req => {
+    const now = Date.now();
+    const cutoff = now - generationRateWindow;
+    if (now - lastRateSweep >= 60_000) {
+      for (const [key, timestamps] of generationBuckets) {
+        if (!timestamps.some(timestamp => timestamp > cutoff)) generationBuckets.delete(key);
+      }
+      lastRateSweep = now;
+    }
+    const subject = req.session?.userId ? `user:${req.session.userId}` : `ip:${req.ip}`;
+    const key = createHmac('sha256', String(quotaSecret)).update(subject).digest('hex');
+    let timestamps = generationBuckets.get(key) || [];
+    timestamps = timestamps.filter(timestamp => timestamp > cutoff);
+    if (timestamps.length >= generationRateLimit) {
+      generationBuckets.set(key, timestamps);
+      return { allowed: false, retryAfter: Math.max(1, Math.ceil((timestamps[0] + generationRateWindow - now) / 1000)) };
+    }
+    if (!generationBuckets.has(key) && generationBuckets.size >= MAX_RATE_BUCKETS) {
+      generationBuckets.delete(generationBuckets.keys().next().value);
+    }
+    timestamps.push(now);
+    generationBuckets.set(key, timestamps);
+    return { allowed: true };
+  };
+  app.use(securityHeaders);
   const proxySetting = config.trustProxy ?? process.env.TRUST_PROXY;
   if (proxySetting) {
     const trustedProxies = /^\d+$/.test(String(proxySetting))
@@ -165,6 +320,10 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
       : String(proxySetting).split(',').map((proxy) => proxy.trim()).filter(Boolean);
     app.set('trust proxy', trustedProxies);
   }
+  app.use(['/api', '/auth'], (req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    return privateNoindex(req, res, next);
+  });
   const configuredOrigins = config.publicOrigins ?? config.publicOrigin ??
     process.env.PUBLIC_ORIGINS ?? process.env.PUBLIC_ORIGIN ?? process.env.RENDER_EXTERNAL_URL ?? '';
   const originValues = Array.isArray(configuredOrigins)
@@ -177,6 +336,19 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
     }
     return parsed.origin;
   }));
+  const siteUrl = config.siteUrl ?? process.env.SITE_URL ?? DEFAULT_SITE_URL;
+  let siteHost;
+  try { siteHost = new URL(siteUrl).host.toLowerCase(); }
+  catch { throw new Error('SITE_URL must be a valid bare HTTP(S) origin.'); }
+  const allowedHosts = new Set([...originValues.map(origin => new URL(origin).host.toLowerCase()), siteHost]);
+  const production = process.env.NODE_ENV === 'production';
+  app.use((req, res, next) => {
+    const host = (req.get('host') || '').toLowerCase();
+    if (!allowedHosts.has(host) && (production || !isLoopbackHost(host))) {
+      return res.status(403).set('X-Robots-Tag', 'noindex, nofollow').type('text/plain').send('Host is not allowed.');
+    }
+    return next();
+  });
   if (process.env.NODE_ENV !== 'production') {
     allowedOrigins.add('http://localhost:5173');
     allowedOrigins.add('http://127.0.0.1:5173');
@@ -235,7 +407,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
     const { state, nonce } = req.session.oauth;
     return req.session.save(error => {
       if (error) {
-        logger.error('[sonora] Could not start Google sign-in', error);
+        logSafeError(logger, '[sonora] Could not start Google sign-in', error);
         return res.status(500).send('Google sign-in could not be started.');
       }
       try {
@@ -268,9 +440,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
     try {
       await new Promise((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()));
     } catch (error) {
-      logger.error('[sonora] Could not persist Google sign-in state', {
-        name: error instanceof Error ? error.name : 'UnknownError'
-      });
+      logSafeError(logger, '[sonora] Could not persist Google sign-in state', error);
       return res.status(503).send('Google sign-in is temporarily unavailable.');
     }
     let payload;
@@ -280,9 +450,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
       const ticket = await oauthClient.verifyIdToken({ idToken: tokens.id_token, audience: googleClientId });
       payload = ticket.getPayload();
     } catch (error) {
-      logger.error('[sonora] Google identity verification failed', {
-        name: error instanceof Error ? error.name : 'UnknownError'
-      });
+      logSafeError(logger, '[sonora] Google identity verification failed', error);
       return res.status(502).send('Google sign-in could not be verified. Please try again.');
     }
     if (!payload?.sub || payload.nonce !== expectedNonce) {
@@ -298,9 +466,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
       await new Promise((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()));
       return res.redirect('/');
     } catch (error) {
-      logger.error('[sonora] Could not persist Google account session', {
-        name: error instanceof Error ? error.name : 'UnknownError'
-      });
+      logSafeError(logger, '[sonora] Could not persist Google account session', error);
       return res.status(503).send('Google sign-in is temporarily unavailable.');
     }
   });
@@ -308,7 +474,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
     if (!oauthEnabled || !req.session) return res.status(204).end();
     req.session.destroy(error => {
       if (error) {
-        logger.error('[sonora] Could not end Google sign-in session', error);
+        logSafeError(logger, '[sonora] Could not end Google sign-in session', error);
         return res.status(500).json({ error: 'Sign-out could not be completed.' });
       }
       res.clearCookie('sonora.sid', {
@@ -324,7 +490,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
       await dailyWordQuota.getUsage(req.ip);
       return res.json({ ok: true, service: 'sonora-proxy' });
     } catch (error) {
-      logger.error('[sonora] Daily word quota storage failed', error);
+      logSafeError(logger, '[sonora] Daily word quota storage failed', error);
       return res.status(503).json({ ok: false, service: 'sonora-proxy' });
     }
   });
@@ -341,7 +507,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
         auth: { enabled: oauthEnabled, signedIn, admin: signedIn && isAdmin(req) }
       });
     } catch (error) {
-      logger.error('[sonora] Daily word quota storage failed', error);
+      logSafeError(logger, '[sonora] Daily word quota storage failed', error);
       return res.status(503).json({ error: 'Daily word quota is temporarily unavailable.' });
     }
   });
@@ -356,12 +522,16 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
     if (text.length > selectedModel.characterLimit) return res.status(413).json({ error: `Input exceeds the ${selectedModel.characterLimit.toLocaleString()} character application limit.` });
     if (!apiKey) return res.status(503).json({ error: 'Server is not configured with GEMINI_API_KEY yet.' });
     if (active >= 2) return res.status(429).json({ error: 'Server is busy. Try again later.' });
+    const requestBudget = takeGenerationSlot(req);
+    if (!requestBudget.allowed) {
+      return res.status(429).set('Retry-After', String(requestBudget.retryAfter)).json({ error: 'Too many generation requests. Try again later.' });
+    }
     const words = countWords(text);
     let reservation;
     try {
       reservation = await reserveDailyQuota(req, words);
     } catch (error) {
-      logger.error('[sonora] Daily word quota storage failed', error);
+      logSafeError(logger, '[sonora] Daily word quota storage failed', error);
       return res.status(503).json({ error: 'Daily word quota is temporarily unavailable.' });
     }
     if (!reservation.allowed) {
@@ -374,17 +544,23 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
     const controller = new AbortController();
     const cancel = () => { if (!res.writableEnded) controller.abort(); };
     res.on('close', cancel);
-    const totalChunks = splitIntoChunks(text).length;
-    let audioBytes = 0, completedChunks = 0;
+    const totalChunks = getSpeechChunks(text).length;
+    let audioBytes = 0, wireBytes = 0, completedChunks = 0;
     const emit = (event) => {
       if (controller.signal.aborted || res.destroyed || res.writableEnded) throw new Error('Stream closed.');
       const line = JSON.stringify(event) + '\n';
+      const lineBytes = Buffer.byteLength(line);
+      if (wireBytes + lineBytes > MAX_STREAM_WIRE_BYTES) {
+        controller.abort();
+        throw new Error('Stream wire limit exceeded.');
+      }
       // Live callbacks cannot pause the upstream socket. Abort rather than
       // queueing unbounded audio when the HTTP consumer is too slow.
-      if (res.writableLength + Buffer.byteLength(line) > MAX_STREAM_BUFFER) {
+      if (res.writableLength + lineBytes > MAX_STREAM_BUFFER) {
         controller.abort();
         throw new Error('Stream buffering limit exceeded.');
       }
+      wireBytes += lineBytes;
       return res.write(line);
     };
     try {
@@ -436,11 +612,11 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
         message: redactDiagnostic(error instanceof Error ? error.message : error),
         code: typeof error?.code === 'string' || typeof error?.code === 'number' ? error.code : undefined,
         status: Number.isInteger(error?.status) ? error.status : undefined,
-        closeReason: redactDiagnostic(error?.closeReason) || undefined,
-        completedChunks,
-        totalChunks,
-        audioBytes
-      });
+         closeReason: redactDiagnostic(error?.closeReason) || undefined,
+         completedChunks,
+         totalChunks,
+         audioBytes
+       });
       if (!res.destroyed && !res.writableEnded) {
         if (res.headersSent) {
           // Reserve a small terminal event even when the audio buffer cap hit.
@@ -451,14 +627,18 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
   };
   app.post('/api/generate', handleGenerate(false));
   app.post('/api/generate/stream', handleGenerate(true));
-  app.use(express.static(publicDir));
-  app.get('*', (_, res) => res.sendFile(path.join(publicDir, 'index.html')));
+  app.use(createSeoRouter({
+    publicDir: config.publicDir ?? publicDir,
+    siteUrl: config.siteUrl ?? process.env.SITE_URL,
+    googleSiteVerification: config.googleSiteVerification ?? process.env.GOOGLE_SITE_VERIFICATION,
+    logger
+  }));
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
     const tooLarge = error.type === 'entity.too.large';
     const malformed = error.type === 'entity.parse.failed';
     const status = tooLarge ? 413 : malformed ? 400 : 500;
-    res.status(status).json({ error: tooLarge ? 'Request body is too large.' : malformed ? 'Invalid JSON request body.' : 'Request could not be processed.' });
+    res.status(status).set('X-Robots-Tag', 'noindex, nofollow').json({ error: tooLarge ? 'Request body is too large.' : malformed ? 'Invalid JSON request body.' : 'Request could not be processed.' });
   });
   return app;
 }
@@ -477,7 +657,7 @@ export async function synthesizeWithLiveApi({ text, model = DEFAULT_MODEL_ID, vo
   if (!selected || selected.transport !== 'live' || typeof text !== 'string' || !text.trim() || text.length > selected.characterLimit || !VOICES.includes(voice)) throw new Error('Invalid Live request.');
   const ai = client ?? new GoogleGenAI({ apiKey });
   const audio = [];
-  const chunks = splitIntoChunks(text);
+  const chunks = getSpeechChunks(text);
   let audioBytes = 0, completedChunks = 0;
 
   for (let first = 0; first < chunks.length; first += MAX_TURNS_PER_LIVE_SESSION) {
@@ -538,9 +718,8 @@ export async function synthesizeWithLiveApi({ text, model = DEFAULT_MODEL_ID, vo
                 if (!part.inlineData) continue;
                 if (pending?.kind !== 'turn') throw new Error('Unexpected audio outside a requested turn.');
                 const { data, mimeType } = part.inlineData;
-                if (!/^audio\/pcm;\s*rate=24000(?:;\s*channels=1)?$/i.test(mimeType || '') || typeof data !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)) throw new Error('Unsupported or malformed Live audio.');
-                const bytes = Buffer.from(data, 'base64');
-                validatePcm(bytes);
+                if (!/^audio\/pcm;\s*rate=24000(?:;\s*channels=1)?$/i.test(mimeType || '') || typeof data !== 'string') throw new Error('Unsupported or malformed Live audio.');
+                const bytes = decodeBase64PCM(data, MAX_AUDIO_BYTES - audioBytes);
                 audioBytes += bytes.length;
                 if (audioBytes > MAX_AUDIO_BYTES) throw new Error('Live audio exceeds the buffering limit.');
                 if (onAudio) {

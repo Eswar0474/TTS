@@ -1,14 +1,46 @@
 export const SAMPLE_RATE = 24000;
 export const MAX_AUDIO_BYTES = 128 * 1024 * 1024;
+// NDJSON contains base64 audio plus event framing, so its safe wire budget is
+// intentionally separate from the decoded PCM budget.
+export const MAX_STREAM_WIRE_BYTES = Math.ceil(MAX_AUDIO_BYTES / 3) * 4 + 4 * 1024 * 1024;
+
+const base64Value = (code) => {
+  if (code >= 65 && code <= 90) return code - 65;
+  if (code >= 97 && code <= 122) return code - 71;
+  if (code >= 48 && code <= 57) return code + 4;
+  if (code === 43) return 62;
+  if (code === 47) return 63;
+  return -1;
+};
 
 /** Decode mono signed 16-bit little-endian PCM without relying on host endianness. */
-export function decodeBase64PCM(data) {
-  if (typeof data !== 'string' || !data.length || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) {
+export function decodeBase64PCM(data, maxBytes = MAX_AUDIO_BYTES) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 2 || typeof data !== 'string' || !data.length || data.length % 4 !== 0 ||
+      data.length > Math.ceil(maxBytes / 3) * 4) {
     throw new Error('Invalid base64 PCM audio.');
   }
-  const binary = atob(data);
-  if (binary.length % 2) throw new Error('PCM audio must contain complete 16-bit samples.');
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+  const payloadLength = data.length - padding;
+  for (let index = 0; index < payloadLength; index++) {
+    if (base64Value(data.charCodeAt(index)) < 0) throw new Error('Invalid base64 PCM audio.');
+  }
+  for (let index = payloadLength; index < data.length; index++) {
+    if (data[index] !== '=') throw new Error('Invalid base64 PCM audio.');
+  }
+  if (padding === 2 && (base64Value(data.charCodeAt(payloadLength - 1)) & 0x0f) !== 0) {
+    throw new Error('Invalid base64 PCM audio.');
+  }
+  if (padding === 1 && (base64Value(data.charCodeAt(payloadLength - 1)) & 0x03) !== 0) {
+    throw new Error('Invalid base64 PCM audio.');
+  }
+  const decodedLength = (data.length / 4) * 3 - padding;
+  if (!decodedLength || decodedLength > maxBytes || decodedLength % 2) throw new Error('PCM audio must contain complete 16-bit samples.');
+  let binary;
+  try { binary = atob(data); } catch { throw new Error('Invalid base64 PCM audio.'); }
+  if (binary.length !== decodedLength) throw new Error('Invalid base64 PCM audio.');
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
 }
 
 export function pcmToFloat32(bytes) {
@@ -42,7 +74,7 @@ export function encodeWav(chunks, sampleRate = SAMPLE_RATE, maxBytes = MAX_AUDIO
 }
 
 /** Incremental NDJSON parser: accepts arbitrary text boundaries and a final unterminated line. */
-export function createNDJSONParser(onEvent, maxBytes = MAX_AUDIO_BYTES) {
+export function createNDJSONParser(onEvent, maxBytes = MAX_STREAM_WIRE_BYTES) {
   let pending = '';
   let received = 0;
   const parse = (line) => {
@@ -55,7 +87,7 @@ export function createNDJSONParser(onEvent, maxBytes = MAX_AUDIO_BYTES) {
   return {
     push(text) {
       received += new TextEncoder().encode(text).byteLength;
-      if (received > maxBytes) throw new Error('Stream exceeds the 128 MiB safety limit.');
+      if (received > maxBytes) throw new Error('Stream exceeds the wire safety limit.');
       pending += text;
       let start = 0;
       let end;
