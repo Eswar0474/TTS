@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import http from 'node:http';
-import { createApp, DEFAULT_MODEL_ID } from '../server/index.js';
+import { createApp, DEFAULT_MODEL_ID, securePostgresOptions } from '../server/index.js';
 import { createMemoryDailyWordQuota } from '../server/quota.js';
 
 async function serve(t, config = {}, synthesize = async () => Buffer.from([0, 0])) {
@@ -78,5 +78,22 @@ test('production database URLs cannot explicitly disable TLS', () => {
   } finally {
     if (previous === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = previous;
+  }
+});
+
+test('PostgreSQL uses TLS and can explicitly allow Render managed self-signed certificates', () => {
+  const previous = process.env.DATABASE_SSL_CA;
+  const previousVerification = process.env.DATABASE_SSL_REJECT_UNAUTHORIZED;
+  delete process.env.DATABASE_SSL_CA;
+  delete process.env.DATABASE_SSL_REJECT_UNAUTHORIZED;
+  try {
+    assert.deepEqual(securePostgresOptions('postgres://db.example/sonora').ssl, { rejectUnauthorized: true });
+    process.env.DATABASE_SSL_REJECT_UNAUTHORIZED = 'false';
+    assert.deepEqual(securePostgresOptions('postgres://db.example/sonora').ssl, { rejectUnauthorized: false });
+  } finally {
+    if (previous === undefined) delete process.env.DATABASE_SSL_CA;
+    else process.env.DATABASE_SSL_CA = previous;
+    if (previousVerification === undefined) delete process.env.DATABASE_SSL_REJECT_UNAUTHORIZED;
+    else process.env.DATABASE_SSL_REJECT_UNAUTHORIZED = previousVerification;
   }
 });

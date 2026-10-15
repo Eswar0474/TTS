@@ -111,7 +111,7 @@ const securityHeaders = (req, res, next) => {
   next();
 };
 
-function securePostgresOptions(databaseUrl) {
+export function securePostgresOptions(databaseUrl) {
   let parsed;
   try { parsed = new URL(databaseUrl); }
   catch { throw new Error('DATABASE_URL must be a valid PostgreSQL URL.'); }
@@ -124,9 +124,10 @@ function securePostgresOptions(databaseUrl) {
   // in the connection string and are never logged.
   parsed.searchParams.delete('sslmode');
   const ca = process.env.DATABASE_SSL_CA;
+  const rejectUnauthorized = process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false';
   return {
     connectionString: parsed.toString(),
-    ssl: ca ? { rejectUnauthorized: true, ca } : { rejectUnauthorized: true }
+    ssl: ca ? { rejectUnauthorized, ca } : { rejectUnauthorized }
   };
 }
 

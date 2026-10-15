@@ -29,6 +29,10 @@ services:
         generateValue: true
       - key: DAILY_QUOTA_SECRET
         generateValue: true
+      # Render's managed PostgreSQL may present a self-signed certificate.
+      # Keep TLS encryption but allow the server certificate to be unverified.
+      - key: DATABASE_SSL_REJECT_UNAUTHORIZED
+        value: "false"
       - key: DATABASE_URL
         fromDatabase:
           name: sonora-demo-db
