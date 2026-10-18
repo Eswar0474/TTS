@@ -10,6 +10,7 @@ export default defineConfig({
       '/api': 'http://localhost:8787',
       '/auth': 'http://localhost:8787',
       '/how-it-works': 'http://localhost:8787',
+      '/pricing': 'http://localhost:8787',
       '/robots.txt': 'http://localhost:8787',
       '/sitemap.xml': 'http://localhost:8787'
     }

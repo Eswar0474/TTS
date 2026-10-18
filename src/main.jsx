@@ -32,7 +32,8 @@ function validateConfig(data) {
     !Array.isArray(data.models) || !data.models.length || !data.models.every((model) => model &&
       nonempty(model.id) && model.id.length <= 200 && !/\s/.test(model.id) && nonempty(model.name) &&
        model.transport === 'live' && nonempty(model.role) && nonempty(model.description) &&
-      positiveLimit(model.characterLimit) && typeof model.verified === 'boolean') ||
+      positiveLimit(model.characterLimit) && typeof model.verified === 'boolean' &&
+      typeof model.requiresLogin === 'boolean' && typeof model.requiresAdmin === 'boolean') ||
     new Set(data.models.map((model) => model.id)).size !== data.models.length) {
     throw new Error('The server returned an invalid streaming model catalog.');
   }
@@ -91,6 +92,15 @@ function App() {
 
   function changeSelection(key, value) {
     if (requestRef.current || selectionRef.current[key] === value) return;
+    const model = config?.models.find((item) => item.id === value);
+    if (key === 'modelId' && model?.requiresLogin && !config?.auth.signedIn) {
+      setAuthPrompt('model');
+      return;
+    }
+    if (key === 'modelId' && model?.requiresAdmin && !config?.auth.admin) {
+      setAuthPrompt('model');
+      return;
+    }
     resetOutput();
     selectionRef.current = { ...selectionRef.current, [key]: value };
     if (key === 'modelId') setModelId(value);
@@ -110,7 +120,12 @@ function App() {
       validateConfig(data);
       if (controller.signal.aborted || !mountedRef.current || configRequestRef.current !== controller) return;
       const previous = selectionRef.current;
-      const nextModelId = data.models.some((model) => model.id === previous.modelId) ? previous.modelId : data.defaultModelId || data.modelId || data.models[0].id;
+      const previousModel = data.models.find((model) => model.id === previous.modelId);
+      const nextModelId = previousModel &&
+        (!previousModel.requiresLogin || data.auth.signedIn) &&
+        (!previousModel.requiresAdmin || data.auth.admin)
+        ? previous.modelId
+        : data.defaultModelId || data.modelId || data.models[0].id;
       const nextVoice = data.voices.includes(previous.voice) ? previous.voice : data.voices.includes('Kore') ? 'Kore' : data.voices[0] || '';
       if (previous.modelId !== nextModelId || previous.voice !== nextVoice) resetOutput();
       selectionRef.current = { modelId: nextModelId, voice: nextVoice };
@@ -158,6 +173,7 @@ function App() {
   }, []);
 
   const generating = status === 'generating';
+  const busy = generating;
    const selectedModel = config?.models.find((model) => model.id === modelId);
    const modelPresentation = selectedModel ? getModelPresentation(selectedModel) : null;
    const limit = selectedModel?.characterLimit;
@@ -176,7 +192,19 @@ function App() {
    const ready = configStatus === 'ready' && config?.configured && voice && selectedModel;
    const progressPercent = progress.total ? Math.round((progress.completed / progress.total) * 100) : 0;
   const percent = limit ? Math.min((count / limit) * 100, 100) : 0;
-   const availability = getAvailability({ configStatus, configured: config?.configured, voices: config?.voices, generating, selectedModel, voice, text, overLimit, overDailyLimit });
+   const availability = getAvailability({
+     configStatus,
+     configured: config?.configured,
+     voices: config?.voices,
+     generating: busy,
+     selectedModel,
+     voice,
+     text,
+     overLimit,
+     overDailyLimit,
+     signedIn: config?.auth.signedIn,
+     admin: config?.auth.admin
+   });
 
   useEffect(() => {
     if (!guestQuotaPromptNeeded) return;
@@ -209,7 +237,7 @@ function App() {
 
   function selectAudioFormat(format) {
     if (!Object.hasOwn(AUDIO_FORMATS, format)) return;
-    if (!config?.auth.signedIn && format !== 'mp3') {
+    if (!config?.auth.admin && format !== 'mp3') {
       setAuthPrompt('formats');
       return;
     }
@@ -219,7 +247,7 @@ function App() {
 
   async function downloadAudio() {
     if (downloadLockRef.current || !wavBytesRef.current) return;
-    if (!config?.auth.signedIn && audioFormat !== 'mp3') {
+    if (!config?.auth.admin && audioFormat !== 'mp3') {
       setAuthPrompt('formats');
       return;
     }
@@ -255,7 +283,7 @@ function App() {
   async function generate() {
     if (requestRef.current || !ready) return;
     setError('');
-     if (!text.trim()) return setError('Add some text before generating audio.');
+    if (!text.trim()) return setError('Add some text before generating audio.');
     if (overLimit) return setError(`Limit: ${limit.toLocaleString()} characters per request.`);
     if (overDailyLimit) return setError(`Only ${dailyWordQuota.remaining.toLocaleString()} daily words remain.`);
     clearFile();
@@ -265,7 +293,12 @@ function App() {
     let reader;
     const current = () => mountedRef.current && requestRef.current === controller && !controller.signal.aborted;
     try {
-      const response = await fetch('/api/generate/stream', { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: requestText, model: modelId, voice }) });
+      const response = await fetch('/api/generate/stream', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: requestText, model: modelId, voice })
+      });
       if (!response.ok) {
         const data = await response.json();
         if (validDailyWordQuota(data.dailyWordQuota)) setDailyWordQuota(data.dailyWordQuota);
@@ -327,7 +360,7 @@ function App() {
   }
 
   return <div className="app-shell">
-     <header className="topbar"><div className="brand"><span className="brand-mark">◒</span><span>sonora</span><span className="badge">VOICE STUDIO</span></div><div className="topbar-right"><span>Text-to-speech workspace</span><a className="help-link" href="/how-it-works">How it works &amp; FAQ</a>{config?.auth.signedIn
+     <header className="topbar"><div className="brand"><span className="brand-mark">◒</span><span>sonora</span><span className="badge">VOICE STUDIO</span></div><div className="topbar-right"><span>Text-to-speech workspace</span><a className="help-link" href="/pricing">Upgrade</a><a className="help-link" href="/how-it-works">How it works &amp; FAQ</a>{config?.auth.signedIn
       ? <>{config.auth.admin && <span className="admin-pill">ADMIN</span>}<button className="account-button" onClick={signOut}>Sign out</button></>
       : config?.auth.enabled
         ? <a className="account-button" href="/auth/google">Sign in with Google</a>
@@ -336,10 +369,10 @@ function App() {
       <section className="hero" id="studio"><div><p className="eyebrow">SONORA · CREATIVE AUDIO</p><h1>AI text to speech<br /><em>with Sonora.</em></h1><p className="hero-copy">Turn your script into expressive voice narration. Choose a voice, guide its delivery with tags, preview the result, and export audio.</p></div><div className="hero-orb"><div className="orb-core" /><div className="wave wave-one" /><div className="wave wave-two" /><div className="wave wave-three" /></div></section>
       <section className="studio-grid">
          <div className="panel input-panel">
-           <div className="panel-heading"><div><span className="step">01</span><h2>Write your script</h2></div><button className="sample-button" disabled={generating || signedInQuotaExhausted} onClick={() => { setText(SAMPLE); setChargedDraftWords(0); }}>Use sample <span>↗</span></button></div>
-           <div className="expression-bar"><label className="expression-entry"><span className="expression-label">EMOTION & DELIVERY TAGS</span><input aria-label="Emotion and delivery tags" type="text" value={expressionTags} disabled={generating || signedInQuotaExhausted} onChange={(e) => { setExpressionTags(e.target.value); setChargedDraftWords(0); }} placeholder="e.g. Warm, excited, whispering" /><small>{buildModulatedText('', expressionTags).trim() || 'No tags added'}</small></label></div>
+           <div className="panel-heading"><div><span className="step">01</span><h2>Write your script</h2></div><button className="sample-button" disabled={busy || signedInQuotaExhausted} onClick={() => { setText(SAMPLE); setChargedDraftWords(0); }}>Use sample <span>↗</span></button></div>
+           <div className="expression-bar"><label className="expression-entry"><span className="expression-label">EMOTION & DELIVERY TAGS</span><input aria-label="Emotion and delivery tags" type="text" value={expressionTags} disabled={busy || signedInQuotaExhausted} onChange={(e) => { setExpressionTags(e.target.value); setChargedDraftWords(0); }} placeholder="e.g. Warm, excited, whispering" /><small>{buildModulatedText('', expressionTags).trim() || 'No tags added'}</small></label></div>
            <p className="expression-hint">Add tags separated by commas.</p>
-           <div className={`textarea-wrap ${signedInQuotaExhausted ? 'quota-locked' : ''}`}><textarea aria-label="Script" aria-disabled={signedInQuotaExhausted} disabled={generating || signedInQuotaExhausted} onChange={(e) => { setText(e.target.value); setChargedDraftWords(0); }} value={text} placeholder="Write or paste your script…" />{signedInQuotaExhausted && <div className="quota-lock-message" role="status"><strong>Daily allowance used</strong><span>Next reset in</span><time>{resetCountdown}</time></div>}<div className="textarea-footer"><span className={overLimit ? 'counter over' : 'counter'}>{count.toLocaleString()} <span>/ {limit ? limit.toLocaleString() : '—'} characters</span></span><span className="word-counter" aria-label={`${wordCount.toLocaleString()} words in draft, including tags`}>{wordCount.toLocaleString()} words <span>incl. tags</span></span><span className="tag-hint">Tags included</span></div></div>
+           <div className={`textarea-wrap ${signedInQuotaExhausted ? 'quota-locked' : ''}`}><textarea aria-label="Script" aria-disabled={signedInQuotaExhausted} disabled={busy || signedInQuotaExhausted} onChange={(e) => { setText(e.target.value); setChargedDraftWords(0); }} value={text} placeholder="Write or paste your script…" />{signedInQuotaExhausted && <div className="quota-lock-message" role="status"><strong>Daily allowance used</strong><span>Next reset in</span><time>{resetCountdown}</time></div>}<div className="textarea-footer"><span className={overLimit ? 'counter over' : 'counter'}>{count.toLocaleString()} <span>/ {limit ? limit.toLocaleString() : '—'} characters</span></span><span className="word-counter" aria-label={`${wordCount.toLocaleString()} words in draft, including tags`}>{wordCount.toLocaleString()} words <span>incl. tags</span></span><span className="tag-hint">Tags included</span></div></div>
            <div className="quota-track"><div style={{ width: `${percent}%` }} /></div>
            <p className={overDailyLimit ? 'daily-quota over' : 'daily-quota'}>{dailyWordQuota?.unlimited ? 'Admin access · daily word cap bypassed' : dailyWordQuota ? `${projectedDailyWords.toLocaleString()} / ${dailyWordQuota.limit.toLocaleString()} words incl. draft · ${projectedWordsRemaining.toLocaleString()} left · resets 00:00 UTC` : 'Loading daily allowance…'}</p>
            <p className="quota-disclaimer">{dailyWordQuota?.unlimited ? 'Per-request and provider safety limits still apply.' : config?.auth.signedIn ? 'Google account allowance · 1,000 words each UTC day.' : 'Guest allowance · 50 words each UTC day.'}</p>
@@ -347,15 +380,20 @@ function App() {
          </div>
         <aside className="panel settings-panel">
           <div className="panel-heading"><div><span className="step">02</span><h2>Voice settings</h2></div><span className="live-pill">STUDIO</span></div>
-           <label>ENGINE<select value={selectedModel ? modelId : ''} disabled={generating || configStatus !== 'ready'} onChange={(e) => changeSelection('modelId', e.target.value)} aria-describedby="engine-description">
+           <label>ENGINE<select value={selectedModel ? modelId : ''} disabled={busy || configStatus !== 'ready'} onChange={(e) => changeSelection('modelId', e.target.value)} aria-describedby="engine-description">
              {!selectedModel && <option value="">{configStatus === 'loading' ? 'Loading engines…' : 'No engines available'}</option>}
-             {(config?.models || []).map((model) => <option key={model.id} value={model.id}>{getModelPresentation(model).name}</option>)}
+             {(config?.models || []).filter((model) =>
+               (!model.requiresLogin || config?.auth.signedIn) &&
+               (!model.requiresAdmin || config?.auth.admin)
+             ).map((model) => <option key={model.id} value={model.id}>{getModelPresentation(model).name}</option>)}
            </select></label>
            {selectedModel && modelPresentation && <div className="engine-description" id="engine-description">
              <div className="model-profile"><strong>{modelPresentation.profile}</strong><span>{selectedModel.characterLimit.toLocaleString()} character app limit</span></div>
+             {selectedModel.requiresLogin && !config?.auth.signedIn && <p className="model-access-note">Sign in with Google to use the Balanced model.</p>}
+             {selectedModel.requiresAdmin && !config?.auth.admin && <p className="model-access-note">Enhanced Thinking is temporarily available to admins only while paid access is being built.</p>}
            </div>}
            <p className="model-note">AI may not produce the exact output you expect.</p>
-          <div className="config-status" role="status"><p>{configStatus === 'loading' ? 'Checking server configuration…' : configError || (config?.configured ? 'Server configured · Streaming available' : 'Server is not configured. Set up the server, then retry.')}</p><button className="sample-button" disabled={generating || configStatus === 'loading'} onClick={loadConfig}>Retry configuration ↗</button></div>
+          <div className="config-status" role="status"><p>{configStatus === 'loading' ? 'Checking server configuration…' : configError || (config?.configured ? 'Server configured · Streaming available' : 'Server is not configured. Set up the server, then retry.')}</p><button className="sample-button" disabled={busy || configStatus === 'loading'} onClick={loadConfig}>Retry configuration ↗</button></div>
           <label>VOICE<select value={voice} disabled={availability.voiceDisabled} onChange={(e) => changeSelection('voice', e.target.value)}>{!voice && <option value="">No voices available</option>}{(config?.voices || []).map((item) => <option key={item} value={item}>{VOICE_LABELS[item] || 'Studio voice'}</option>)}</select></label>
           <div className="voice-preview"><div className="avatar">{VOICE_LABELS[voice]?.slice(0, 1) || '—'}</div><div><strong>{VOICE_LABELS[voice] || 'Choose a voice'}</strong><small>Studio voice</small></div><div className="mini-wave">▁▃▆▃▅▂▃</div></div>
           <button className="generate-button" disabled={availability.generateDisabled} aria-describedby="generation-requirements" onClick={generate}>{generating ? <><span className="spinner" /> Synthesizing…</> : <>Generate audio <span>→</span></>}</button>
@@ -366,13 +404,14 @@ function App() {
       <section className={`output-panel ${audioUrl ? 'has-audio' : ''} ${generating ? 'is-generating' : ''}`}>
         <div className="output-label"><span className="step">03</span><div><h2>{audioUrl ? 'Preview your narration' : 'Audio output'}</h2><p role="status">{generating ? `Generating audio · ${progress.completed} of ${progress.total || '…'} segments complete` : audioUrl ? 'Preview the audio below, choose a format, and download.' : status === 'cancelled' ? 'Generation cancelled · No partial file saved' : status === 'error' ? 'Generation failed · No partial file saved' : 'Your completed audio will be available here.'}</p></div></div>
         {generating && <div className="generation-progress"><div className="progress-caption"><span>Generation progress</span><strong>{progressPercent}%</strong></div><progress aria-label="Generation progress" value={progressPercent} max="100" /></div>}
-        <div className="output-controls">{generating && <button className="cancel-button" onClick={cancel}>Cancel generation</button>}{audioUrl && <><audio controls preload="metadata" src={audioUrl} aria-label="Preview completed narration" /><label className="format-picker">DOWNLOAD FORMAT<select aria-label="Download format" value={audioFormat} disabled={downloading || configStatus !== 'ready'} onChange={(event) => selectAudioFormat(event.target.value)}>{Object.entries(AUDIO_FORMATS).map(([format, details]) => <option key={format} value={format}>{details.label}{format !== 'mp3' && !config?.auth.signedIn ? ' · Sign in required' : ''}</option>)}</select></label><button className="download-button" disabled={downloading} onClick={downloadAudio}>{downloading ? 'Preparing…' : `Download ${AUDIO_FORMATS[audioFormat].label} ↓`}</button></>}</div>
+        <div className="output-controls">{generating && <button className="cancel-button" onClick={cancel}>Cancel generation</button>}{audioUrl && <><audio controls preload="metadata" src={audioUrl} aria-label="Preview completed narration" /><label className="format-picker">DOWNLOAD FORMAT<select aria-label="Download format" value={audioFormat} disabled={downloading || configStatus !== 'ready'} onChange={(event) => selectAudioFormat(event.target.value)}>{Object.entries(AUDIO_FORMATS).map(([format, details]) => <option key={format} value={format}>{details.label}{format !== 'mp3' && !config?.auth.admin ? ' · Plus+' : ''}</option>)}</select></label><button className="download-button" disabled={downloading} onClick={downloadAudio}>{downloading ? 'Preparing…' : `Download ${AUDIO_FORMATS[audioFormat].label} ↓`}</button></>}</div>
         {audioUrl && <p className="format-note">First export loads the audio encoder (~32 MB). Conversion runs in your browser; audio stays on your device.</p>}
+        {audioUrl && !config?.auth.admin && audioFormat === 'mp3' && <p className="format-note">Plus and higher plans include every format. <a href="/pricing">See plans</a>; paid access is not active yet.</p>}
         {downloadError && <p className="error-text download-error" role="alert">{downloadError}</p>}
         {!audioUrl && !generating && <div className="empty-wave">{[...Array(32)].map((_, i) => <i key={i} style={{ height: `${10 + (i * 17) % 38}px` }} />)}</div>}
       </section>
     </main>
-    {authPrompt && <div className="auth-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAuthPrompt(null); }}><section className="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title"><button className="modal-close" aria-label="Close dialog" onClick={() => setAuthPrompt(null)}>×</button><span className="modal-eyebrow">{authPrompt === 'quota' ? 'DAILY ALLOWANCE' : 'MORE AUDIO FORMATS'}</span><h2 id="auth-modal-title">{authPrompt === 'quota' ? 'Keep creating with Google' : 'Unlock every format'}</h2><p>{authPrompt === 'quota' ? (quotaExhausted ? 'Your guest word allowance is used up. Sign in for a separate 1,000-word daily allowance.' : 'This script is over your remaining guest words. Sign in for a separate 1,000-word daily allowance.') : 'MP3 is available to everyone. Sign in with Google to download WAV, FLAC, AAC, and OGG.'}</p>{config?.auth.enabled ? <a className="account-button modal-sign-in" href="/auth/google" target="_blank" rel="noreferrer" onClick={() => { authPopupRequestedRef.current = true; }}>Sign in with Google</a> : <button className="account-button modal-sign-in" disabled title="Google sign-in is not configured on this server.">Google sign-in unavailable</button>}<button className="modal-dismiss" onClick={() => setAuthPrompt(null)}>Continue as guest</button></section></div>}
+    {authPrompt && <div className="auth-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAuthPrompt(null); }}><section className="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title"><button className="modal-close" aria-label="Close dialog" onClick={() => setAuthPrompt(null)}>×</button><span className="modal-eyebrow">{authPrompt === 'quota' ? 'DAILY ALLOWANCE' : authPrompt === 'model' ? 'MODEL ACCESS' : 'MORE AUDIO FORMATS'}</span><h2 id="auth-modal-title">{authPrompt === 'quota' ? 'Keep creating with Google' : authPrompt === 'model' ? (config?.auth.signedIn ? 'Enhanced Thinking is admin-only for now' : 'Sign in to use Balanced') : 'Unlock every format'}</h2><p>{authPrompt === 'quota' ? (quotaExhausted ? 'Your guest word allowance is used up. Sign in for a separate 1,000-word daily allowance.' : 'This script is over your remaining guest words. Sign in for a separate 1,000-word daily allowance.') : authPrompt === 'model' ? (config?.auth.signedIn ? 'Paid-plan verification is not connected yet. Enhanced Thinking is temporarily available to admins only.' : 'The Balanced model is available after you sign in with Google. Guests can use Low Quality.') : 'Free currently includes MP3 only. Plus and higher plans include WAV, FLAC, AAC, and OGG when paid access is available.'}</p>{authPrompt === 'formats' || config?.auth.signedIn ? <a className="account-button modal-sign-in" href="/pricing">View plans</a> : config?.auth.enabled ? <a className="account-button modal-sign-in" href="/auth/google" target="_blank" rel="noreferrer" onClick={() => { authPopupRequestedRef.current = true; }}>Sign in with Google</a> : <button className="account-button modal-sign-in" disabled title="Google sign-in is not configured on this server.">Google sign-in unavailable</button>}<button className="modal-dismiss" onClick={() => setAuthPrompt(null)}>Continue as guest</button></section></div>}
   </div>;
 }
 createRoot(document.getElementById('root')).render(<App />);

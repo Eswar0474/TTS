@@ -5,12 +5,20 @@ import { AUDIO_FORMATS, transcodeArguments } from './audio-formats.js';
 export { AUDIO_FORMATS } from './audio-formats.js';
 
 let ffmpegPromise;
+let exportSequence = 0;
+const ffmpegLog = [];
 
 async function getFFmpeg() {
   if (!ffmpegPromise) {
     ffmpegPromise = (async () => {
       const { FFmpeg } = await import('@ffmpeg/ffmpeg');
       const ffmpeg = new FFmpeg();
+      ffmpeg.on('log', ({ message }) => {
+        if (typeof message === 'string') {
+          ffmpegLog.push(message);
+          if (ffmpegLog.length > 40) ffmpegLog.shift();
+        }
+      });
       await ffmpeg.load({ coreURL, wasmURL });
       return ffmpeg;
     })();
@@ -29,20 +37,24 @@ export async function transcodeAudio(wavBytes, format) {
   if (format === 'wav') return wavBytes;
 
   const ffmpeg = await getFFmpeg();
-  const inputName = `sonora-input-${crypto.randomUUID()}.wav`;
-  const outputName = `sonora-output-${crypto.randomUUID()}.${AUDIO_FORMATS[format].extension}`;
-  await ffmpeg.writeFile(inputName, wavBytes.slice());
+  const sequence = ++exportSequence;
+  const inputName = `sonora-input-${sequence}.wav`;
+  const outputName = `sonora-output-${sequence}.${AUDIO_FORMATS[format].extension}`;
+  ffmpegLog.length = 0;
   try {
+    await ffmpeg.writeFile(inputName, wavBytes.slice());
     const exitCode = await ffmpeg.exec(transcodeArguments(format, inputName, outputName));
-    if (exitCode !== 0) throw new Error(`Audio conversion to ${AUDIO_FORMATS[format].label} failed.`);
+    if (exitCode !== 0) {
+      const details = ffmpegLog.slice(-5).join(' ').slice(-500);
+      throw new Error(`Audio conversion to ${AUDIO_FORMATS[format].label} failed.${details ? ` ${details}` : ''}`);
+    }
     const result = await ffmpeg.readFile(outputName);
     if (!(result instanceof Uint8Array) || !result.byteLength) throw new Error('Audio conversion returned an empty file.');
     return result;
   } finally {
-    await ffmpeg.deleteFile(inputName);
-    if (ffmpeg.listDir) {
-      const files = await ffmpeg.listDir('/');
-      if (files.some((file) => file.name === outputName)) await ffmpeg.deleteFile(outputName);
+    const files = await ffmpeg.listDir('/');
+    for (const name of [inputName, outputName]) {
+      if (files.some((file) => file.name === name)) await ffmpeg.deleteFile(name);
     }
   }
 }

@@ -27,3 +27,27 @@ test('requests above the remaining daily word allowance are disabled', () => {
   assert.equal(state.generateDisabled, true);
   assert.match(state.reason, /daily word allowance/i);
 });
+
+test('Balanced requires sign-in and Enhanced Thinking is admin-only', () => {
+  const balanced = { id: 'balanced', requiresLogin: true, requiresAdmin: false };
+  const guest = getAvailability({ ...ready, selectedModel: balanced, signedIn: false, admin: false });
+  assert.equal(guest.generateDisabled, true);
+  assert.match(guest.reason, /sign in with Google/i);
+  assert.equal(getAvailability({
+    ...ready,
+    selectedModel: balanced,
+    signedIn: true,
+    admin: false
+  }).generateDisabled, false);
+
+  const enhanced = { id: 'enhanced', requiresLogin: false, requiresAdmin: true };
+  const freeUser = getAvailability({ ...ready, selectedModel: enhanced, signedIn: true, admin: false });
+  assert.equal(freeUser.generateDisabled, true);
+  assert.match(freeUser.reason, /admins only/i);
+  assert.equal(getAvailability({
+    ...ready,
+    selectedModel: enhanced,
+    signedIn: true,
+    admin: true
+  }).generateDisabled, false);
+});

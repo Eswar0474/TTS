@@ -11,6 +11,7 @@ const TITLE = 'Sonora Voice Studio — AI Text to Speech & Audio';
 const DESCRIPTION = 'Turn scripts into expressive AI voice narrations with Sonora Voice Studio. Choose a voice, preview speech, and export MP3, WAV, FLAC, AAC, or OGG audio.';
 const GUIDE_TITLE = 'How It Works & FAQ — Sonora Voice Studio';
 const GUIDE_DESCRIPTION = 'Learn how Sonora Voice Studio turns scripts into expressive AI voice narrations, how delivery tags and exports work, and how daily allowances apply.';
+const PRICING_TITLE = 'Plans & Pricing — Sonora Voice Studio';
 const FIXTURE = `<!doctype html>
 <html lang="en">
   <head>
@@ -31,6 +32,15 @@ const GUIDE_FIXTURE = `<!doctype html>
   </head>
   <body><main><h1>How it works &amp; FAQ</h1><section id="how-it-works">Write, preview, export.</section><section id="faq">Frequently asked questions.</section></main></body>
 </html>`;
+const PRICING_FIXTURE = `<!doctype html>
+<html lang="en">
+  <head>
+    <!-- seo:head:start -->
+    <title>Build-time pricing title that must be replaced</title>
+    <!-- seo:head:end -->
+  </head>
+  <body><main><h1>Choose your studio plan</h1><p>₹20 / month</p><p>₹100 / month</p><p>₹250 / month</p><p>Paid plans are not active yet.</p></main></body>
+</html>`;
 
 async function serve(t, config = {}) {
   const publicDir = await mkdtemp(path.join(tmpdir(), 'sonora-seo-'));
@@ -38,6 +48,7 @@ async function serve(t, config = {}) {
   await mkdir(path.join(publicDir, 'assets'));
   await writeFile(path.join(publicDir, 'index.html'), FIXTURE);
   await writeFile(path.join(publicDir, 'how-it-works.html'), GUIDE_FIXTURE);
+  await writeFile(path.join(publicDir, 'pricing.html'), PRICING_FIXTURE);
   await writeFile(path.join(publicDir, 'assets', 'app.js'), 'console.log("studio");');
   await writeFile(path.join(publicDir, 'favicon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
   const app = createApp({
@@ -67,9 +78,10 @@ test('robots and sitemap advertise the configured canonical public pages, includ
   assert.equal(sitemap.status, 200);
   assert.match(sitemap.headers.get('content-type'), /^application\/xml; charset=utf-8$/);
   const xml = await sitemap.text();
-  assert.equal(xml, '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://studio.example:8443/</loc></url>\n  <url><loc>https://studio.example:8443/how-it-works</loc></url>\n</urlset>\n');
-  assert.equal((xml.match(/<loc>/g) || []).length, 2);
+  assert.equal(xml, '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://studio.example:8443/</loc></url>\n  <url><loc>https://studio.example:8443/how-it-works</loc></url>\n  <url><loc>https://studio.example:8443/pricing</loc></url>\n</urlset>\n');
+  assert.equal((xml.match(/<loc>/g) || []).length, 3);
   assert.match(xml, /<loc>https:\/\/studio\.example:8443\/how-it-works<\/loc>/);
+  assert.match(xml, /<loc>https:\/\/studio\.example:8443\/pricing<\/loc>/);
   const sitemapHead = await fetch(`${base}/sitemap.xml`, { method: 'HEAD' });
   assert.equal(sitemapHead.status, 200);
   assert.equal(sitemapHead.headers.get('content-type'), sitemap.headers.get('content-type'));
@@ -98,7 +110,8 @@ test('the guide has a crawlable extensionless URL and page-specific metadata', a
   assert.deepEqual(schema['@graph'].map(entry => entry['@type']), ['WebPage', 'FAQPage']);
   assert.equal(schema['@graph'][0].url, 'https://studio.example/how-it-works');
   assert.equal(schema['@graph'][0].description, GUIDE_DESCRIPTION);
-  assert.equal(schema['@graph'][1].mainEntity.length, 4);
+  assert.equal(schema['@graph'][1].mainEntity.length, 5);
+  assert.equal(schema['@graph'][1].mainEntity[1].name, 'Which models can I use?');
   assert.equal(schema['@graph'][1].mainEntity[0].acceptedAnswer['@type'], 'Answer');
 
   const extensionRedirect = await fetch(`${base}/how-it-works.html`, { redirect: 'manual' });
@@ -107,6 +120,24 @@ test('the guide has a crawlable extensionless URL and page-specific metadata', a
   const slashRedirect = await fetch(`${base}/how-it-works/`, { redirect: 'manual' });
   assert.equal(slashRedirect.status, 301);
   assert.equal(slashRedirect.headers.get('location'), '/how-it-works');
+});
+
+test('pricing page has a public canonical URL and monthly plan information', async t => {
+  const { base } = await serve(t, { siteUrl: 'https://studio.example' });
+  const response = await fetch(`${base}/pricing`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type'), /^text\/html; charset=utf-8$/);
+  const html = await response.text();
+  assert.ok(!html.includes('Build-time pricing title that must be replaced'));
+  assert.match(html, new RegExp(`<title>${PRICING_TITLE.replace('&', '&amp;')}<\\/title>`));
+  assert.match(html, /<link rel="canonical" href="https:\/\/studio\.example\/pricing" \/>/);
+  assert.match(html, /₹20/);
+  assert.match(html, /₹100/);
+  assert.match(html, /₹250/);
+  assert.match(html, /Paid plans are not active yet/);
+  const redirect = await fetch(`${base}/pricing.html`, { redirect: 'manual' });
+  assert.equal(redirect.status, 301);
+  assert.equal(redirect.headers.get('location'), '/pricing');
 });
 
 test('homepage replaces just marked head with public metadata and safely escaped ownership', async t => {

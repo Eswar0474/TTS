@@ -249,6 +249,7 @@ body {
 .engine-description { margin: 11px 0; font-size: 11px; }
 .model-profile strong { color: var(--accent-bright); font-size: 11px; }
 .model-profile span { font-size: 9px; }
+.model-access-note { margin: 8px 0 0; color: #c3a47e; font-size: 10px; line-height: 1.5; }
 .model-note {
   margin: 14px 0;
   padding: 10px 12px;

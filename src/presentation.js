@@ -2,17 +2,17 @@ export const MODEL_PRESENTATION = Object.freeze({
   'gemini-2.5-flash-native-audio-preview-12-2025': {
     name: 'Low Quality',
     profile: 'Low quality profile',
-    description: 'A low-quality profile label for voice generation.'
+    description: 'A lightweight option for everyday voice generation.'
   },
   'gemini-3.8-live': {
     name: 'Balanced',
     profile: 'Balanced profile',
-    description: 'A general-purpose profile label.'
+    description: 'A general-purpose voice generation profile for signed-in users.'
   },
   'gemini-3.8-live-extended-thinking': {
     name: 'Enhanced Thinking',
-    profile: 'Enhanced thinking profile',
-    description: 'An extended-reasoning profile label.'
+    profile: 'Top-tier profile',
+    description: 'A premium voice generation profile; temporarily restricted to admins.'
   }
 });
 

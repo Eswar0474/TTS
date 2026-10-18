@@ -10,13 +10,16 @@ const TITLE = 'Sonora Voice Studio — AI Text to Speech & Audio';
 const DESCRIPTION = 'Turn scripts into expressive AI voice narrations with Sonora Voice Studio. Choose a voice, preview speech, and export MP3, WAV, FLAC, AAC, or OGG audio.';
 const GUIDE_TITLE = 'How It Works & FAQ — Sonora Voice Studio';
 const GUIDE_DESCRIPTION = 'Learn how Sonora Voice Studio turns scripts into expressive AI voice narrations, how delivery tags and exports work, and how daily allowances apply.';
+const PRICING_TITLE = 'Plans & Pricing — Sonora Voice Studio';
+const PRICING_DESCRIPTION = 'Compare Sonora Voice Studio monthly plans, daily word allowances, model access, and audio export formats.';
 const HEAD_START = '<!-- seo:head:start -->';
 const HEAD_END = '<!-- seo:head:end -->';
 const NOINDEX = 'noindex, nofollow';
 
 const GUIDE_FAQ = Object.freeze([
   ['How does the daily word allowance work?', 'Guests can submit up to 50 whitespace-separated words per IP per UTC day. Signed-in Google accounts can submit up to 1,000 words per account per UTC day. Words in the script and delivery tags both count. Allowances reset at 00:00 UTC.'],
-  ['Which audio formats can I export?', 'Guests can download MP3. WAV, FLAC, AAC, and OGG downloads require Google sign-in.'],
+  ['Which models can I use?', 'Guests can use Low Quality. Signed-in free accounts can use Low Quality and Balanced. Enhanced Thinking is temporarily restricted to admins while paid-plan verification is built.'],
+  ['Which audio formats can I export?', 'Free accounts can download MP3. Plus and higher plans are intended to include WAV, FLAC, AAC, and OGG after billing and subscription verification are available.'],
   ['Will tags produce an exact voice delivery?', 'Tags guide delivery, but generated output is not guaranteed to match the requested delivery exactly.'],
   ['Can I generate, preview, or export audio without JavaScript?', 'JavaScript is required for generation, preview, and export.']
 ]);
@@ -116,10 +119,20 @@ export function createSeoRouter({
   const origin = canonicalOrigin(siteUrl);
   const home = `${origin}/`;
   const guide = `${origin}/how-it-works`;
+  const pricing = `${origin}/pricing`;
   const router = express.Router();
   const pages = {
     home: { file: 'index.html', title: TITLE, description: DESCRIPTION, url: home, schema: homeSchema(home) },
-    guide: { file: 'how-it-works.html', title: GUIDE_TITLE, description: GUIDE_DESCRIPTION, url: guide, schema: guideSchema(guide) }
+    guide: { file: 'how-it-works.html', title: GUIDE_TITLE, description: GUIDE_DESCRIPTION, url: guide, schema: guideSchema(guide) },
+    pricing: { file: 'pricing.html', title: PRICING_TITLE, description: PRICING_DESCRIPTION, url: pricing, schema: {
+      '@context': 'https://schema.org',
+      '@type': 'WebPage',
+      '@id': `${pricing}#webpage`,
+      url: pricing,
+      name: PRICING_TITLE,
+      description: PRICING_DESCRIPTION,
+      inLanguage: 'en'
+    } }
   };
   const servePage = page => async (req, res) => {
     try {
@@ -143,13 +156,18 @@ export function createSeoRouter({
   router.get('/sitemap.xml', (req, res) => res
     .set('Cache-Control', 'public, max-age=3600')
     .type('application/xml')
-    .send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${[home, guide].map(url => `  <url><loc>${escapeHtml(url)}</loc></url>`).join('\n')}\n</urlset>\n`));
+    .send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${[home, guide, pricing].map(url => `  <url><loc>${escapeHtml(url)}</loc></url>`).join('\n')}\n</urlset>\n`));
   router.get('/index.html', (req, res) => res.redirect(301, '/'));
   router.get('/how-it-works.html', (req, res) => res.redirect(301, '/how-it-works'));
   router.get('/how-it-works/', (req, res, next) => req.path === '/how-it-works/'
     ? res.redirect(301, '/how-it-works')
     : next());
+  router.get('/pricing.html', (req, res) => res.redirect(301, '/pricing'));
+  router.get('/pricing/', (req, res, next) => req.path === '/pricing/'
+    ? res.redirect(301, '/pricing')
+    : next());
   router.get('/how-it-works', servePage(pages.guide));
+  router.get('/pricing', servePage(pages.pricing));
   router.get('/', servePage(pages.home));
   router.use(['/api', '/auth'], (req, res) => res.status(404)
     .set('X-Robots-Tag', NOINDEX).type('text/plain').send('Not found.'));
