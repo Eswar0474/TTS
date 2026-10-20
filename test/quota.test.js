@@ -13,6 +13,7 @@ function createFakePostgresPool() {
           sql.startsWith('CREATE TABLE IF NOT EXISTS daily_word_usage') ||
           sql.startsWith('CREATE TABLE IF NOT EXISTS users') ||
           sql.startsWith('ALTER TABLE users ADD COLUMN') ||
+          sql.includes('session') ||
           sql.startsWith('CREATE INDEX IF NOT EXISTS') ||
           sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK' ||
           sql.startsWith('DELETE FROM daily_word_usage')) return { rows: [] };
