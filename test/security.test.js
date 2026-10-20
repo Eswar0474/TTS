@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import http from 'node:http';
-import { createApp, DEFAULT_MODEL_ID, securePostgresOptions } from '../server/index.js';
+import { createApp, DEFAULT_MODEL_ID, securePostgresOptions, isRemotePostgresUrl } from '../server/index.js';
 import { createMemoryDailyWordQuota } from '../server/quota.js';
 
 async function serve(t, config = {}, synthesize = async () => Buffer.from([0, 0])) {
@@ -97,4 +97,13 @@ test('PostgreSQL uses TLS and can explicitly allow Render managed self-signed ce
     if (previousVerification === undefined) delete process.env.DATABASE_SSL_REJECT_UNAUTHORIZED;
     else process.env.DATABASE_SSL_REJECT_UNAUTHORIZED = previousVerification;
   }
+});
+
+test('isRemotePostgresUrl identifies Supabase / remote databases and preserves loopback', () => {
+  assert.equal(isRemotePostgresUrl('postgresql://localhost:5432/sonora'), false);
+  assert.equal(isRemotePostgresUrl('postgresql://127.0.0.1:5432/sonora'), false);
+  assert.equal(isRemotePostgresUrl('postgresql://[::1]:5432/sonora'), false);
+  assert.equal(isRemotePostgresUrl('postgresql://postgres.project:secret@aws-0-us-east-1.pooler.supabase.com:6543/postgres'), true);
+  assert.equal(isRemotePostgresUrl('postgresql://postgres:secret@db.project.supabase.co:5432/postgres'), true);
+  assert.equal(isRemotePostgresUrl('not-a-valid-url'), false);
 });

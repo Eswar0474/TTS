@@ -6,7 +6,7 @@ import './stream.css';
 import { getAvailability } from './availability.js';
 import { buildModulatedText } from './expression.js';
 import { getModelPresentation, VOICE_LABELS } from './presentation.js';
-import { AUDIO_FORMATS } from './audio-formats.js';
+import { AUDIO_FORMATS, isFormatAllowed, FORMAT_MIN_PLAN } from './audio-formats.js';
 import { formatResetCountdown } from './quota-display.js';
 
 const SAMPLE = 'The future is not a destination. It is a rhythm we learn to move with.';
@@ -97,7 +97,7 @@ function App() {
       setAuthPrompt('model');
       return;
     }
-    if (key === 'modelId' && model?.requiresAdmin && !config?.auth.admin) {
+    if (key === 'modelId' && model?.requiresAdmin && !hasEnhancedAccess) {
       setAuthPrompt('model');
       return;
     }
@@ -192,6 +192,10 @@ function App() {
    const ready = configStatus === 'ready' && config?.configured && voice && selectedModel;
    const progressPercent = progress.total ? Math.round((progress.completed / progress.total) * 100) : 0;
   const percent = limit ? Math.min((count / limit) * 100, 100) : 0;
+   const userPlan = (config?.user?.plan || 'free').toLowerCase();
+   const isAdmin = Boolean(config?.auth?.admin);
+   const isPaid = ['plus', 'pro', 'studio'].includes(userPlan);
+   const hasEnhancedAccess = isAdmin || ['pro', 'studio'].includes(userPlan);
    const availability = getAvailability({
      configStatus,
      configured: config?.configured,
@@ -203,8 +207,15 @@ function App() {
      overLimit,
      overDailyLimit,
      signedIn: config?.auth.signedIn,
-     admin: config?.auth.admin
+     admin: config?.auth.admin,
+     userPlan
    });
+
+  useEffect(() => {
+    if (!isFormatAllowed(audioFormat, userPlan, isAdmin)) {
+      setAudioFormat('mp3');
+    }
+  }, [userPlan, isAdmin, audioFormat]);
 
   useEffect(() => {
     if (!guestQuotaPromptNeeded) return;
@@ -237,7 +248,7 @@ function App() {
 
   function selectAudioFormat(format) {
     if (!Object.hasOwn(AUDIO_FORMATS, format)) return;
-    if (!config?.auth.admin && format !== 'mp3') {
+    if (!isFormatAllowed(format, userPlan, isAdmin)) {
       setAuthPrompt('formats');
       return;
     }
@@ -247,7 +258,7 @@ function App() {
 
   async function downloadAudio() {
     if (downloadLockRef.current || !wavBytesRef.current) return;
-    if (!config?.auth.admin && audioFormat !== 'mp3') {
+    if (!isFormatAllowed(audioFormat, userPlan, isAdmin)) {
       setAuthPrompt('formats');
       return;
     }
@@ -360,8 +371,8 @@ function App() {
   }
 
   return <div className="app-shell">
-     <header className="topbar"><div className="brand"><span className="brand-mark">◒</span><span>sonora</span><span className="badge">VOICE STUDIO</span></div><div className="topbar-right"><span>Text-to-speech workspace</span><a className="help-link" href="/pricing">Upgrade</a><a className="help-link" href="/how-it-works">How it works &amp; FAQ</a>{config?.auth.signedIn
-      ? <>{config.auth.admin && <span className="admin-pill">ADMIN</span>}<button className="account-button" onClick={signOut}>Sign out</button></>
+     <header className="topbar"><div className="brand"><span className="brand-mark">◒</span><span>sonora</span><span className="badge">VOICE STUDIO</span></div><div className="topbar-right"><span>Text-to-speech workspace</span><a className="help-link" href="/pricing">{isPaid ? `Plan: ${userPlan.toUpperCase()}` : 'Upgrade'}</a><a className="help-link" href="/how-it-works">How it works &amp; FAQ</a>{config?.auth.signedIn
+      ? <>{config.auth.admin && <span className="admin-pill">ADMIN</span>}{!config.auth.admin && isPaid && <span className="admin-pill" style={{ background: '#3b82f6', color: '#fff' }}>{userPlan.toUpperCase()}</span>}<button className="account-button" onClick={signOut}>Sign out</button></>
       : config?.auth.enabled
         ? <a className="account-button" href="/auth/google">Sign in with Google</a>
         : <button className="account-button" disabled title="Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI in Render to enable Google sign-in.">Sign in with Google</button>}</div>{authActionError && <p className="auth-error" role="alert">{authActionError}</p>}</header>
@@ -384,13 +395,13 @@ function App() {
              {!selectedModel && <option value="">{configStatus === 'loading' ? 'Loading engines…' : 'No engines available'}</option>}
              {(config?.models || []).filter((model) =>
                (!model.requiresLogin || config?.auth.signedIn) &&
-               (!model.requiresAdmin || config?.auth.admin)
+               (!model.requiresAdmin || hasEnhancedAccess)
              ).map((model) => <option key={model.id} value={model.id}>{getModelPresentation(model).name}</option>)}
            </select></label>
            {selectedModel && modelPresentation && <div className="engine-description" id="engine-description">
              <div className="model-profile"><strong>{modelPresentation.profile}</strong><span>{selectedModel.characterLimit.toLocaleString()} character app limit</span></div>
              {selectedModel.requiresLogin && !config?.auth.signedIn && <p className="model-access-note">Sign in with Google to use the Balanced model.</p>}
-             {selectedModel.requiresAdmin && !config?.auth.admin && <p className="model-access-note">Enhanced Thinking is temporarily available to admins only while paid access is being built.</p>}
+             {selectedModel.requiresAdmin && !hasEnhancedAccess && <p className="model-access-note">Enhanced Thinking requires a Pro, Studio, or Admin plan.</p>}
            </div>}
            <p className="model-note">AI may not produce the exact output you expect.</p>
           <div className="config-status" role="status"><p>{configStatus === 'loading' ? 'Checking server configuration…' : configError || (config?.configured ? 'Server configured · Streaming available' : 'Server is not configured. Set up the server, then retry.')}</p><button className="sample-button" disabled={busy || configStatus === 'loading'} onClick={loadConfig}>Retry configuration ↗</button></div>
@@ -404,14 +415,14 @@ function App() {
       <section className={`output-panel ${audioUrl ? 'has-audio' : ''} ${generating ? 'is-generating' : ''}`}>
         <div className="output-label"><span className="step">03</span><div><h2>{audioUrl ? 'Preview your narration' : 'Audio output'}</h2><p role="status">{generating ? `Generating audio · ${progress.completed} of ${progress.total || '…'} segments complete` : audioUrl ? 'Preview the audio below, choose a format, and download.' : status === 'cancelled' ? 'Generation cancelled · No partial file saved' : status === 'error' ? 'Generation failed · No partial file saved' : 'Your completed audio will be available here.'}</p></div></div>
         {generating && <div className="generation-progress"><div className="progress-caption"><span>Generation progress</span><strong>{progressPercent}%</strong></div><progress aria-label="Generation progress" value={progressPercent} max="100" /></div>}
-        <div className="output-controls">{generating && <button className="cancel-button" onClick={cancel}>Cancel generation</button>}{audioUrl && <><audio controls preload="metadata" src={audioUrl} aria-label="Preview completed narration" /><label className="format-picker">DOWNLOAD FORMAT<select aria-label="Download format" value={audioFormat} disabled={downloading || configStatus !== 'ready'} onChange={(event) => selectAudioFormat(event.target.value)}>{Object.entries(AUDIO_FORMATS).map(([format, details]) => <option key={format} value={format}>{details.label}{format !== 'mp3' && !config?.auth.admin ? ' · Plus+' : ''}</option>)}</select></label><button className="download-button" disabled={downloading} onClick={downloadAudio}>{downloading ? 'Preparing…' : `Download ${AUDIO_FORMATS[audioFormat].label} ↓`}</button></>}</div>
+        <div className="output-controls">{generating && <button className="cancel-button" onClick={cancel}>Cancel generation</button>}{audioUrl && <><audio controls preload="metadata" src={audioUrl} aria-label="Preview completed narration" /><label className="format-picker">DOWNLOAD FORMAT<select aria-label="Download format" value={audioFormat} disabled={downloading || configStatus !== 'ready'} onChange={(event) => selectAudioFormat(event.target.value)}>{Object.entries(AUDIO_FORMATS).map(([format, details]) => { const allowed = isFormatAllowed(format, userPlan, isAdmin); const minPlan = FORMAT_MIN_PLAN[format] || 'Free'; const tag = !allowed ? ` · ${minPlan}${minPlan === 'Studio' ? '' : '+'}` : ''; return <option key={format} value={format}>{details.label}{tag}</option>; })}</select></label><button className="download-button" disabled={downloading} onClick={downloadAudio}>{downloading ? 'Preparing…' : `Download ${AUDIO_FORMATS[audioFormat].label} ↓`}</button></>}</div>
         {audioUrl && <p className="format-note">First export loads the audio encoder (~32 MB). Conversion runs in your browser; audio stays on your device.</p>}
-        {audioUrl && !config?.auth.admin && audioFormat === 'mp3' && <p className="format-note">Plus and higher plans include every format. <a href="/pricing">See plans</a>; paid access is not active yet.</p>}
+        {audioUrl && !isAdmin && userPlan !== 'studio' && <p className="format-note">Plus adds AAC &amp; OGG, Pro adds FLAC, and Studio includes Master WAV. <a href="/pricing">See plans</a>.</p>}
         {downloadError && <p className="error-text download-error" role="alert">{downloadError}</p>}
         {!audioUrl && !generating && <div className="empty-wave">{[...Array(32)].map((_, i) => <i key={i} style={{ height: `${10 + (i * 17) % 38}px` }} />)}</div>}
       </section>
     </main>
-    {authPrompt && <div className="auth-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAuthPrompt(null); }}><section className="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title"><button className="modal-close" aria-label="Close dialog" onClick={() => setAuthPrompt(null)}>×</button><span className="modal-eyebrow">{authPrompt === 'quota' ? 'DAILY ALLOWANCE' : authPrompt === 'model' ? 'MODEL ACCESS' : 'MORE AUDIO FORMATS'}</span><h2 id="auth-modal-title">{authPrompt === 'quota' ? 'Keep creating with Google' : authPrompt === 'model' ? (config?.auth.signedIn ? 'Enhanced Thinking is admin-only for now' : 'Sign in to use Balanced') : 'Unlock every format'}</h2><p>{authPrompt === 'quota' ? (quotaExhausted ? 'Your guest word allowance is used up. Sign in for a separate 1,000-word daily allowance.' : 'This script is over your remaining guest words. Sign in for a separate 1,000-word daily allowance.') : authPrompt === 'model' ? (config?.auth.signedIn ? 'Paid-plan verification is not connected yet. Enhanced Thinking is temporarily available to admins only.' : 'The Balanced model is available after you sign in with Google. Guests can use Low Quality.') : 'Free currently includes MP3 only. Plus and higher plans include WAV, FLAC, AAC, and OGG when paid access is available.'}</p>{authPrompt === 'formats' || config?.auth.signedIn ? <a className="account-button modal-sign-in" href="/pricing">View plans</a> : config?.auth.enabled ? <a className="account-button modal-sign-in" href="/auth/google" target="_blank" rel="noreferrer" onClick={() => { authPopupRequestedRef.current = true; }}>Sign in with Google</a> : <button className="account-button modal-sign-in" disabled title="Google sign-in is not configured on this server.">Google sign-in unavailable</button>}<button className="modal-dismiss" onClick={() => setAuthPrompt(null)}>Continue as guest</button></section></div>}
+    {authPrompt && <div className="auth-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAuthPrompt(null); }}><section className="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title"><button className="modal-close" aria-label="Close dialog" onClick={() => setAuthPrompt(null)}>×</button><span className="modal-eyebrow">{authPrompt === 'quota' ? 'DAILY ALLOWANCE' : authPrompt === 'model' ? 'MODEL ACCESS' : 'MORE AUDIO FORMATS'}</span><h2 id="auth-modal-title">{authPrompt === 'quota' ? 'Keep creating with Google' : authPrompt === 'model' ? (config?.auth.signedIn ? 'Enhanced Thinking is admin-only for now' : 'Sign in to use Balanced') : 'Unlock premium formats'}</h2><p>{authPrompt === 'quota' ? (quotaExhausted ? 'Your guest word allowance is used up. Sign in for a separate 1,000-word daily allowance.' : 'This script is over your remaining guest words. Sign in for a separate 1,000-word daily allowance.') : authPrompt === 'model' ? (config?.auth.signedIn ? 'Enhanced Thinking requires Pro or Studio plan.' : 'The Balanced model is available after you sign in with Google. Guests can use Low Quality.') : 'Free includes MP3 only. Plus adds AAC and OGG, Pro adds FLAC, and Studio includes uncompressed Studio Master WAV.'}</p>{authPrompt === 'formats' || config?.auth.signedIn ? <a className="account-button modal-sign-in" href="/pricing">View plans</a> : config?.auth.enabled ? <a className="account-button modal-sign-in" href="/auth/google" target="_blank" rel="noreferrer" onClick={() => { authPopupRequestedRef.current = true; }}>Sign in with Google</a> : <button className="account-button modal-sign-in" disabled title="Google sign-in is not configured on this server.">Google sign-in unavailable</button>}<button className="modal-dismiss" onClick={() => setAuthPrompt(null)}>Continue as guest</button></section></div>}
   </div>;
 }
 createRoot(document.getElementById('root')).render(<App />);

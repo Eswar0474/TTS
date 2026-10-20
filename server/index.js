@@ -112,6 +112,16 @@ const securityHeaders = (req, res, next) => {
   next();
 };
 
+export const isRemotePostgresUrl = (databaseUrl) => {
+  try {
+    const url = new URL(databaseUrl);
+    const host = url.hostname.toLowerCase();
+    return host !== 'localhost' && host !== '127.0.0.1' && host !== '::1' && host !== '[::1]';
+  } catch {
+    return false;
+  }
+};
+
 export function securePostgresOptions(databaseUrl) {
   let parsed;
   try { parsed = new URL(databaseUrl); }
@@ -215,6 +225,25 @@ export const getSpeechChunks = input => {
   return speech;
 };
 
+export async function sweepExpiredSubscriptions(pool, logger = console) {
+  if (!pool || typeof pool.query !== 'function') return 0;
+  try {
+    const result = await pool.query(
+      `UPDATE users
+       SET plan = 'free', updated_at = NOW()
+       WHERE expire_date IS NOT NULL AND expire_date <= NOW() AND plan <> 'free'
+       RETURNING google_id, email, plan`
+    );
+    if (result.rowCount > 0) {
+      logger.info?.(`[sonora] Auto-downgraded ${result.rowCount} expired subscription(s) to free.`);
+    }
+    return result.rowCount;
+  } catch (error) {
+    logSafeError(logger, '[sonora] Subscription sweeper failed', error);
+    return 0;
+  }
+}
+
 export function createApp({ synthesize, config = {}, logger = console, quotaStore } = {}) {
   // Capture configuration independently for every app, including test instances.
   const apiKey = config.apiKey ?? process.env.GEMINI_API_KEY;
@@ -229,7 +258,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
   let pool = config.pool;
   const databaseUrl = config.databaseUrl ?? process.env.DATABASE_URL;
   if (!quotaStore && !pool && databaseUrl) {
-    const poolOptions = process.env.NODE_ENV === 'production'
+    const poolOptions = (process.env.NODE_ENV === 'production' || isRemotePostgresUrl(databaseUrl))
       ? securePostgresOptions(databaseUrl)
       : { connectionString: databaseUrl };
     pool = new Pool(poolOptions);
@@ -243,6 +272,15 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
       : createMemoryDailyWordQuota({ secret: quotaSecret }));
   if (!quotaStore && !pool && process.env.NODE_ENV !== 'production') {
     logger.warn?.('[sonora] DATABASE_URL is not set; daily word usage is in memory and resets when the server restarts.');
+  }
+  if (pool) {
+    sweepExpiredSubscriptions(pool, logger).catch(() => {});
+    const sweeperTimer = setInterval(() => {
+      sweepExpiredSubscriptions(pool, logger).catch(() => {});
+    }, 60_000);
+    if (typeof sweeperTimer.unref === 'function') {
+      sweeperTimer.unref();
+    }
   }
   const googleClientId = config.googleClientId ?? process.env.GOOGLE_CLIENT_ID;
   const googleClientSecret = config.googleClientSecret ?? process.env.GOOGLE_CLIENT_SECRET;
@@ -470,6 +508,38 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
         typeof payload.email === 'string' &&
         adminGoogleEmails.has(payload.email.trim().toLowerCase());
       req.session.adminPolicyVersion = adminPolicyVersion;
+      let plan = 'free';
+      const email = typeof payload.email === 'string' ? payload.email.trim() : '';
+      const name = typeof payload.name === 'string' ? payload.name.trim() : '';
+      if (pool) {
+        try {
+          const userResult = await pool.query(
+            `INSERT INTO users (google_id, email, name, plan, last_login_at)
+             VALUES ($1, $2, $3, 'free', NOW())
+             ON CONFLICT (google_id)
+             DO UPDATE SET
+               email = EXCLUDED.email,
+               name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE users.name END,
+               plan = CASE
+                 WHEN users.expire_date IS NOT NULL AND users.expire_date <= NOW() THEN 'free'
+                 ELSE users.plan
+               END,
+               last_login_at = NOW(),
+               updated_at = NOW()
+             RETURNING plan, name, email, expire_date`,
+            [payload.sub, email, name]
+          );
+          if (userResult.rows[0]) {
+            plan = userResult.rows[0].plan || 'free';
+            req.session.userExpireDate = userResult.rows[0].expire_date || null;
+          }
+        } catch (dbError) {
+          logSafeError(logger, '[sonora] Could not persist user record', dbError);
+        }
+      }
+      req.session.userPlan = plan;
+      req.session.userName = name;
+      req.session.userEmail = email;
       await new Promise((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()));
       return res.redirect('/');
     } catch (error) {
@@ -492,6 +562,60 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
       return res.status(204).end();
     });
   });
+  app.post('/api/plans/subscribe-test', async (req, res) => {
+    if (!oauthEnabled) return res.status(503).json({ error: 'Google sign-in is not configured.' });
+    if (!req.session?.userId) return res.status(401).json({ error: 'Sign in with Google to subscribe.' });
+    const { plan: targetPlan, confirm, durationMinutes } = req.body || {};
+    if (!confirm) return res.status(400).json({ error: 'Subscription confirmation required.' });
+    const validPlans = ['plus', 'pro', 'studio'];
+    const chosenPlan = String(targetPlan || '').toLowerCase();
+    if (!validPlans.includes(chosenPlan)) return res.status(400).json({ error: 'Invalid plan selected.' });
+
+    const minutes = Number(durationMinutes);
+    const hasCustomMinutes = Number.isFinite(minutes) && minutes > 0;
+
+    if (pool) {
+      try {
+        const queryText = hasCustomMinutes
+          ? `UPDATE users
+             SET plan = $1,
+                 expire_date = NOW() + ($3 || ' minutes')::interval,
+                 updated_at = NOW()
+             WHERE google_id = $2
+             RETURNING plan, expire_date`
+          : `UPDATE users
+             SET plan = $1,
+                 expire_date = NOW() + INTERVAL '1 month',
+                 updated_at = NOW()
+             WHERE google_id = $2
+             RETURNING plan, expire_date`;
+
+        const queryParams = hasCustomMinutes
+          ? [chosenPlan, req.session.userId, Math.round(minutes)]
+          : [chosenPlan, req.session.userId];
+
+        const updateResult = await pool.query(queryText, queryParams);
+        if (updateResult.rows[0]) {
+          req.session.userPlan = updateResult.rows[0].plan;
+          req.session.userExpireDate = updateResult.rows[0].expire_date;
+        }
+      } catch (dbError) {
+        logSafeError(logger, '[sonora] Could not update user subscription', dbError);
+        return res.status(500).json({ error: 'Failed to update subscription.' });
+      }
+    } else {
+      req.session.userPlan = chosenPlan;
+      const expire = new Date(Date.now() + (hasCustomMinutes ? Math.round(minutes) * 60_000 : 30 * 24 * 60 * 60_000));
+      req.session.userExpireDate = expire.toISOString();
+    }
+    return res.json({
+      ok: true,
+      plan: req.session.userPlan,
+      expireDate: req.session.userExpireDate,
+      message: `Successfully upgraded to ${chosenPlan} plan!`
+    });
+  });
+
   app.get('/api/health', async (req, res) => {
     try {
       await dailyWordQuota.getUsage(req.ip);
@@ -505,13 +629,46 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
     try {
       const dailyQuota = await readDailyQuota(req);
       const signedIn = Boolean(req.session?.userId);
+      if (signedIn && pool) {
+        try {
+          const userRow = await pool.query(
+            `UPDATE users
+             SET plan = 'free', updated_at = NOW()
+             WHERE google_id = $1 AND expire_date IS NOT NULL AND expire_date <= NOW() AND plan <> 'free'
+             RETURNING plan, name, email, expire_date`,
+            [req.session.userId]
+          );
+          if (userRow.rows[0]) {
+            req.session.userPlan = userRow.rows[0].plan;
+            req.session.userName = userRow.rows[0].name;
+            req.session.userEmail = userRow.rows[0].email;
+            req.session.userExpireDate = userRow.rows[0].expire_date;
+          } else if (!req.session?.userPlan || !req.session?.userEmail) {
+            const queryRow = await pool.query('SELECT plan, name, email, expire_date FROM users WHERE google_id = $1', [req.session.userId]);
+            if (queryRow.rows[0]) {
+              req.session.userPlan = queryRow.rows[0].plan;
+              req.session.userName = queryRow.rows[0].name;
+              req.session.userEmail = queryRow.rows[0].email;
+              req.session.userExpireDate = queryRow.rows[0].expire_date;
+            }
+          }
+        } catch (dbError) {
+          logSafeError(logger, '[sonora] Could not query user record', dbError);
+        }
+      }
       return res.json({
         configured: Boolean(apiKey),
         modelId: defaultModel?.id ?? null, defaultModelId: defaultModel?.id ?? null,
         models: MODELS,
         characterLimit: defaultModel?.characterLimit ?? MODELS[0].characterLimit,
         voices: VOICES, streaming: true, dailyWordQuota: dailyQuota,
-        auth: { enabled: oauthEnabled, signedIn, admin: signedIn && isAdmin(req) }
+        auth: { enabled: oauthEnabled, signedIn, admin: signedIn && isAdmin(req) },
+        user: signedIn ? {
+          name: req.session?.userName || null,
+          email: req.session?.userEmail || null,
+          plan: req.session?.userPlan || 'free',
+          expireDate: req.session?.userExpireDate || null
+        } : null
       });
     } catch (error) {
       logSafeError(logger, '[sonora] Daily word quota storage failed', error);
@@ -529,8 +686,11 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
     if (selectedModel.requiresLogin && !req.session?.userId) {
       return res.status(401).json({ error: 'Sign in with Google to use the Balanced model.' });
     }
-    if (selectedModel.requiresAdmin && !isAdmin(req)) {
-      return res.status(403).json({ error: 'Enhanced Thinking is temporarily available to admins only while paid access is being built.' });
+    const userPlan = req.session?.userPlan || (req.session?.userId ? 'free' : 'guest');
+    const isPaidPlan = ['plus', 'pro', 'studio'].includes(userPlan);
+    const hasEnhancedAccess = isAdmin(req) || ['pro', 'studio'].includes(userPlan);
+    if (selectedModel.requiresAdmin && !hasEnhancedAccess) {
+      return res.status(403).json({ error: 'Enhanced Thinking requires a Pro, Studio, or Admin plan.' });
     }
     if (text.length > selectedModel.characterLimit) return res.status(413).json({ error: `Input exceeds the ${selectedModel.characterLimit.toLocaleString()} character application limit.` });
     if (!apiKey) return res.status(503).json({ error: 'Server is not configured with GEMINI_API_KEY yet.' });

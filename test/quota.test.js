@@ -11,6 +11,9 @@ function createFakePostgresPool() {
       if (sql.includes('pg_advisory_lock') || sql.includes('pg_advisory_unlock') ||
           sql.startsWith('CREATE TABLE IF NOT EXISTS sonora_schema_migrations') ||
           sql.startsWith('CREATE TABLE IF NOT EXISTS daily_word_usage') ||
+          sql.startsWith('CREATE TABLE IF NOT EXISTS users') ||
+          sql.startsWith('ALTER TABLE users ADD COLUMN') ||
+          sql.startsWith('CREATE INDEX IF NOT EXISTS') ||
           sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK' ||
           sql.startsWith('DELETE FROM daily_word_usage')) return { rows: [] };
       if (sql.includes('SELECT migration FROM sonora_schema_migrations')) {
@@ -81,4 +84,33 @@ test('PostgreSQL quota applies separate atomic guest and account limits', async 
 
   currentTime = new Date('2026-10-13T00:00:00.000Z');
   assert.equal((await quota.getUsageFor('user', userId)).used, 0);
+});
+
+test('PostgreSQL schema initialization succeeds when transaction poolers reject advisory locks', async () => {
+  const pool = createFakePostgresPool();
+  const innerClientQuery = (await pool.connect()).query;
+  const poolClient = {
+    release() {},
+    query: async (sql, values) => {
+      if (sql.includes('pg_advisory_lock')) {
+        const error = new Error('pg_advisory_lock is not supported in transaction pooling mode');
+        error.code = '0A000';
+        throw error;
+      }
+      return innerClientQuery(sql, values);
+    }
+  };
+  const poolerPool = {
+    calls: pool.calls,
+    query: pool.query,
+    async connect() { return poolClient; }
+  };
+  const quota = createPostgresDailyWordQuota({
+    pool: poolerPool,
+    secret: 'pooler-test-secret',
+    now: () => new Date('2026-10-12T12:00:00.000Z')
+  });
+  const result = await quota.getUsageFor('ip', '192.0.2.1');
+  assert.equal(result.used, 0);
+  assert.equal(result.limit, 50);
 });

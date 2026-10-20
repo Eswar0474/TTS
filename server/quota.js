@@ -17,8 +17,15 @@ const migrationLockId = 531_240_019;
 
 async function initializeSchema(pool) {
   const client = await pool.connect();
+  let lockAcquired = false;
   try {
-    await client.query('SELECT pg_advisory_lock($1)', [migrationLockId]);
+    try {
+      await client.query('SELECT pg_advisory_lock($1)', [migrationLockId]);
+      lockAcquired = true;
+    } catch {
+      // Supabase / PgBouncer / Supavisor transaction poolers (port 6543) do not support
+      // session-level advisory locks. Proceed with idempotent DDL and transactional updates.
+    }
     await client.query(
       `CREATE TABLE IF NOT EXISTS sonora_schema_migrations (
         migration TEXT PRIMARY KEY,
@@ -44,10 +51,11 @@ async function initializeSchema(pool) {
     await client.query("DELETE FROM daily_word_usage WHERE usage_date < CURRENT_DATE - INTERVAL '90 days'");
   } finally {
     try {
-      await client.query('SELECT pg_advisory_unlock($1)', [migrationLockId]);
-    } finally {
-      client.release();
-    }
+      if (lockAcquired) {
+        await client.query('SELECT pg_advisory_unlock($1)', [migrationLockId]);
+      }
+    } catch {}
+    client.release();
   }
 }
 

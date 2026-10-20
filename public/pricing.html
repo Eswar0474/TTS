@@ -49,45 +49,45 @@
           </ul>
           <a class="plan-action" href="/#studio">Current free plan</a>
         </article>
-        <article class="site-info-panel pricing-card">
+        <article class="site-info-panel pricing-card" data-plan="plus">
           <p class="site-info-kicker">MORE ROOM</p>
           <h2>Plus</h2>
           <p class="plan-price">₹20 <small>/ month</small></p>
           <ul>
             <li>2,000 words per day</li>
             <li>Low Quality and Balanced models</li>
-            <li>MP3, WAV, FLAC, AAC, and OGG downloads</li>
+            <li>MP3, AAC, and OGG downloads</li>
           </ul>
-          <span class="plan-action">Upgrade coming soon</span>
+          <button class="plan-action test-subscribe-btn" data-plan="plus" data-name="Plus" data-price="₹20">Subscribe (Test)</button>
         </article>
-        <article class="site-info-panel pricing-card featured">
+        <article class="site-info-panel pricing-card featured" data-plan="pro">
           <p class="site-info-kicker">MORE POWER</p>
           <h2>Pro</h2>
           <p class="plan-price">₹100 <small>/ month</small></p>
           <ul>
             <li>3,000 words per day</li>
             <li>Low Quality, Balanced, and Enhanced Thinking models</li>
-            <li>MP3, WAV, FLAC, AAC, and OGG downloads</li>
+            <li>MP3, AAC, OGG, and FLAC downloads</li>
           </ul>
-          <span class="plan-action">Upgrade coming soon</span>
+          <button class="plan-action test-subscribe-btn" data-plan="pro" data-name="Pro" data-price="₹100">Subscribe (Test)</button>
         </article>
-        <article class="site-info-panel pricing-card">
+        <article class="site-info-panel pricing-card" data-plan="studio">
           <p class="site-info-kicker">FULL STUDIO</p>
           <h2>Studio</h2>
           <p class="plan-price">₹250 <small>/ month</small></p>
           <ul>
             <li>Unlimited daily words</li>
             <li>Full model access</li>
-            <li>MP3, WAV, FLAC, AAC, and OGG downloads</li>
+            <li>All formats including Master WAV</li>
           </ul>
-          <span class="plan-action">Upgrade coming soon</span>
+          <button class="plan-action test-subscribe-btn" data-plan="studio" data-name="Studio" data-price="₹250">Subscribe (Test)</button>
         </article>
       </section>
 
       <section class="site-info-panel" aria-labelledby="availability-heading">
         <p class="site-info-kicker">PLAN AVAILABILITY</p>
-        <h2 id="availability-heading">Paid plans are not active yet</h2>
-        <p class="pricing-status">We are building payment and subscription verification. Until that is ready, signed-in accounts use Free access, non-MP3 exports and Enhanced Thinking are restricted to admins, and guests have a separate 50-word daily allowance with Low Quality and MP3.</p>
+        <h2 id="availability-heading">Plan subscriptions are active</h2>
+        <p class="pricing-status">You can test upgrading your plan using the test payment buttons above. Free accounts include MP3; Plus unlocks AAC and OGG; Pro adds FLAC; Studio includes uncompressed Master WAV.</p>
         <nav class="section-links" aria-label="Pricing page links">
           <a href="/#studio">Open the studio</a>
           <a href="/how-it-works">How it works &amp; FAQ</a>
@@ -102,5 +102,80 @@
         <a href="/how-it-works">How it works</a>
       </nav>
     </footer>
+
+    <script>
+      (function() {
+        fetch('/api/config')
+          .then(r => r.json())
+          .then(data => {
+            const currentPlan = data.user ? (data.user.plan || 'free').toLowerCase() : null;
+            const expireDate = data.user && data.user.expireDate ? new Date(data.user.expireDate).toLocaleDateString() : null;
+            if (data.user) {
+              const cards = document.querySelectorAll('.pricing-card');
+              cards.forEach(card => {
+                const planKey = card.getAttribute('data-plan');
+                const btn = card.querySelector('.test-subscribe-btn, .plan-action');
+                if (planKey === currentPlan && btn) {
+                  btn.textContent = 'Active Plan' + (expireDate ? ' (Renews ' + expireDate + ')' : '');
+                  btn.disabled = true;
+                  btn.style.opacity = '0.7';
+                  btn.style.cursor = 'default';
+                }
+              });
+            }
+            document.querySelectorAll('.test-subscribe-btn').forEach(btn => {
+              btn.addEventListener('click', async function() {
+                if (!data.auth || !data.auth.signedIn) {
+                  alert('Please sign in with Google first before subscribing.');
+                  window.location.href = '/auth/google';
+                  return;
+                }
+                const planKey = this.getAttribute('data-plan');
+                const planName = this.getAttribute('data-name');
+                const planPrice = this.getAttribute('data-price');
+                const confirmed = window.confirm(
+                  'TEST PAYMENT CONFIRMATION:\n\n' +
+                  'Do you want to complete the payment for ' + planName + ' Plan (' + planPrice + '/month)?\n\n' +
+                  'Click OK for YES (Payment Done) or Cancel for NO.'
+                );
+                if (!confirmed) return;
+
+                const durationInput = window.prompt(
+                  'TESTING EXPIRY TIME:\n\n' +
+                  'Enter expiry duration in minutes for quick testing (e.g. 1 for 1 minute, 5 for 5 minutes),\n' +
+                  'or leave blank to use the standard 1-month expiry:',
+                  '1'
+                );
+
+                const durationMinutes = durationInput && !isNaN(parseFloat(durationInput)) ? parseFloat(durationInput) : null;
+
+                try {
+                  btn.disabled = true;
+                  btn.textContent = 'Processing...';
+                  const res = await fetch('/api/plans/subscribe-test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ plan: planKey, confirm: true, durationMinutes })
+                  });
+                  const result = await res.json();
+                  if (res.ok) {
+                    const formattedDate = new Date(result.expireDate).toLocaleString();
+                    alert('Payment Successful! You are now on the ' + planName + ' plan.\n\nExpire date set to: ' + formattedDate);
+                    window.location.reload();
+                  } else {
+                    alert('Subscription failed: ' + (result.error || 'Unknown error'));
+                    btn.disabled = false;
+                    btn.textContent = 'Subscribe (Test)';
+                  }
+                } catch (err) {
+                  alert('Network error: ' + err.message);
+                  btn.disabled = false;
+                  btn.textContent = 'Subscribe (Test)';
+                }
+              });
+            });
+          }).catch(() => {});
+      })();
+    </script>
   </body>
 </html>
