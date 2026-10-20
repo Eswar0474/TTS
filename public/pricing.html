@@ -95,6 +95,39 @@
       </section>
     </main>
 
+    <!-- Sign-In Required Modal (for guests clicking Subscribe) -->
+    <div id="signin-modal" class="auth-modal-backdrop" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="signin-modal-title">
+      <section class="auth-modal">
+        <button class="modal-close" aria-label="Close dialog" onclick="closeModals()">×</button>
+        <span class="modal-eyebrow">SIGN IN REQUIRED</span>
+        <h2 id="signin-modal-title">Keep creating with Google</h2>
+        <p>Sign in with your Google account to subscribe to <strong id="signin-plan-name" style="color:#e7bd91;">Plus</strong> and unlock more daily words and studio audio formats.</p>
+        <a class="plan-action modal-action-btn" href="/auth/google" style="background:#c99a6b;color:#0d0f14;font-weight:700;">Sign in with Google</a>
+        <button class="modal-dismiss" onclick="closeModals()">Cancel</button>
+      </section>
+    </div>
+
+    <!-- Test Payment & Expiry Modal -->
+    <div id="payment-modal" class="auth-modal-backdrop" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="payment-modal-title">
+      <section class="auth-modal">
+        <button class="modal-close" aria-label="Close dialog" onclick="closeModals()">×</button>
+        <span class="modal-eyebrow">TEST PAYMENT</span>
+        <h2 id="payment-modal-title">Subscribe to <span id="payment-plan-name" style="color:#e7bd91;">Plus</span></h2>
+        <p id="payment-plan-price" style="color:#f0ede8;font:600 22px Georgia,serif;margin:0 0 10px;">₹20 / month</p>
+        <p style="margin-bottom:14px;font-size:13px;color:#aaa39a;">Choose your test expiration time below. Once expired, the sweeper automatically resets your plan to Free.</p>
+        
+        <div style="text-align:left;background:rgba(255,255,255,0.03);border:1px solid rgba(201,154,107,0.25);border-radius:10px;padding:12px 14px;margin-bottom:18px;">
+          <label for="expiry-minutes-input" style="display:block;color:#e7bd91;font:500 11px 'DM Mono',monospace;letter-spacing:0.06em;margin-bottom:6px;">SET EXPIRY TIME (MINUTES):</label>
+          <input id="expiry-minutes-input" type="number" min="1" step="1" value="1" placeholder="e.g. 1 (empty for 1 month)" style="width:100%;padding:9px 12px;background:#0c0f14;border:1px solid rgba(201,154,107,0.35);border-radius:6px;color:#fff;font:inherit;font-size:14px;box-sizing:border-box;" />
+          <small style="display:block;margin-top:6px;color:#8f887f;font-size:11px;line-height:1.4;">Enter <strong>1</strong> for 1 minute (to test the sweeper immediately), or clear the box to use the standard <strong>1 month</strong>.</small>
+        </div>
+
+        <button id="modal-confirm-pay-btn" class="plan-action modal-action-btn" style="background:#c99a6b;color:#0d0f14;font-weight:700;">Yes, Complete Payment</button>
+        <div id="payment-error-msg" style="display:none;color:#f08f88;font-size:12px;margin-top:10px;"></div>
+        <button class="modal-dismiss" onclick="closeModals()">Cancel</button>
+      </section>
+    </div>
+
     <footer class="site-footer help-page help-footer">
       <span>SONORA · VOICE STUDIO</span>
       <nav aria-label="Footer navigation">
@@ -104,10 +137,34 @@
     </footer>
 
     <script>
+      let activeAuthData = null;
+      let selectedPlanKey = null;
+      let selectedPlanName = null;
+
+      function closeModals() {
+        const signinModal = document.getElementById('signin-modal');
+        const paymentModal = document.getElementById('payment-modal');
+        if (signinModal) signinModal.style.display = 'none';
+        if (paymentModal) paymentModal.style.display = 'none';
+      }
+
+      window.closeModals = closeModals;
+
+      window.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeModals();
+      });
+
+      document.querySelectorAll('.auth-modal-backdrop').forEach(backdrop => {
+        backdrop.addEventListener('click', function(e) {
+          if (e.target === backdrop) closeModals();
+        });
+      });
+
       (function() {
         fetch('/api/config')
           .then(r => r.json())
           .then(data => {
+            activeAuthData = data;
             const currentPlan = data.user ? (data.user.plan || 'free').toLowerCase() : (data.auth && data.auth.signedIn ? 'free' : null);
             const expireDate = data.user && data.user.expireDate ? new Date(data.user.expireDate).toLocaleDateString() : null;
             if (data.auth && data.auth.signedIn) {
@@ -121,57 +178,76 @@
                 }
               });
             }
+
             document.querySelectorAll('.test-subscribe-btn').forEach(btn => {
-              btn.addEventListener('click', async function() {
-                if (!data.auth || !data.auth.signedIn) {
-                  alert('Please sign in with Google first before subscribing.');
-                  window.location.href = '/auth/google';
-                  return;
-                }
+              btn.addEventListener('click', function() {
                 const planKey = this.getAttribute('data-plan');
                 const planName = this.getAttribute('data-name');
                 const planPrice = this.getAttribute('data-price');
-                const confirmed = window.confirm(
-                  'TEST PAYMENT CONFIRMATION:\n\n' +
-                  'Do you want to complete the payment for ' + planName + ' Plan (' + planPrice + '/month)?\n\n' +
-                  'Click OK for YES (Payment Done) or Cancel for NO.'
-                );
-                if (!confirmed) return;
+                selectedPlanKey = planKey;
+                selectedPlanName = planName;
 
-                const durationInput = window.prompt(
-                  'TESTING EXPIRY TIME:\n\n' +
-                  'Enter expiry duration in minutes for quick testing (e.g. 1 for 1 minute, 5 for 5 minutes),\n' +
-                  'or leave blank to use the standard 1-month expiry:',
-                  '1'
-                );
+                // If user is NOT signed in with Google, show the Sign-In modal!
+                if (!activeAuthData?.auth?.signedIn) {
+                  document.getElementById('signin-plan-name').textContent = planName;
+                  document.getElementById('signin-modal').style.display = 'grid';
+                  return;
+                }
 
+                // If user IS signed in, show the Payment & Expiry Modal!
+                document.getElementById('payment-plan-name').textContent = planName;
+                document.getElementById('payment-plan-price').textContent = planPrice + ' / month';
+                document.getElementById('expiry-minutes-input').value = '1';
+                document.getElementById('payment-error-msg').style.display = 'none';
+                const confirmBtn = document.getElementById('modal-confirm-pay-btn');
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = 'Yes, Complete Payment';
+                confirmBtn.style.background = '#c99a6b';
+                confirmBtn.style.color = '#0d0f14';
+                document.getElementById('payment-modal').style.display = 'grid';
+              });
+            });
+
+            const confirmPayBtn = document.getElementById('modal-confirm-pay-btn');
+            if (confirmPayBtn) {
+              confirmPayBtn.addEventListener('click', async function() {
+                const durationInput = document.getElementById('expiry-minutes-input').value.trim();
                 const durationMinutes = durationInput && !isNaN(parseFloat(durationInput)) ? parseFloat(durationInput) : null;
+                const payBtn = this;
+                const errorDiv = document.getElementById('payment-error-msg');
+                errorDiv.style.display = 'none';
 
                 try {
-                  btn.disabled = true;
-                  btn.textContent = 'Processing...';
+                  payBtn.disabled = true;
+                  payBtn.textContent = 'Processing payment...';
+
                   const res = await fetch('/api/plans/subscribe-test', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ plan: planKey, confirm: true, durationMinutes })
+                    body: JSON.stringify({ plan: selectedPlanKey, confirm: true, durationMinutes })
                   });
                   const result = await res.json();
                   if (res.ok) {
-                    const formattedDate = new Date(result.expireDate).toLocaleString();
-                    alert('Payment Successful! You are now on the ' + planName + ' plan.\n\nExpire date set to: ' + formattedDate);
-                    window.location.reload();
+                    payBtn.textContent = '✓ Payment Successful!';
+                    payBtn.style.background = '#22c55e';
+                    payBtn.style.color = '#fff';
+                    setTimeout(() => {
+                      window.location.reload();
+                    }, 900);
                   } else {
-                    alert('Subscription failed: ' + (result.error || 'Unknown error'));
-                    btn.disabled = false;
-                    btn.textContent = 'Subscribe (Test)';
+                    errorDiv.textContent = result.error || 'Subscription failed. Please try again.';
+                    errorDiv.style.display = 'block';
+                    payBtn.disabled = false;
+                    payBtn.textContent = 'Yes, Complete Payment';
                   }
                 } catch (err) {
-                  alert('Network error: ' + err.message);
-                  btn.disabled = false;
-                  btn.textContent = 'Subscribe (Test)';
+                  errorDiv.textContent = 'Network error: ' + err.message;
+                  errorDiv.style.display = 'block';
+                  payBtn.disabled = false;
+                  payBtn.textContent = 'Yes, Complete Payment';
                 }
               });
-            });
+            }
           }).catch(() => {});
       })();
     </script>

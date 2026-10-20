@@ -119,6 +119,83 @@ body { min-width: 320px; margin: 0; background: radial-gradient(ellipse at 50% -
 .pricing-status { padding: 14px 16px; border: 1px solid rgba(201, 154, 107, .3); border-radius: 9px; background: rgba(201, 154, 107, .07); color: #d8c6b2; font-size: 13px; line-height: 1.6; }
 .pricing-status a { color: #e7bd91; }
 
+/* Pricing Page Auth & Payment Modals */
+.auth-modal-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(5, 6, 8, 0.82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+.auth-modal {
+  position: relative;
+  width: min(100%, 440px);
+  padding: 34px 28px;
+  border: 1px solid rgba(231, 189, 145, .28);
+  border-radius: 18px;
+  background: radial-gradient(ellipse at 50% 0, rgba(201, 154, 107, .15), transparent 58%), linear-gradient(145deg, #19191b, #101114);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, .6), 0 0 38px rgba(201, 154, 107, .12);
+  text-align: center;
+  box-sizing: border-box;
+}
+.modal-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #aaa39a;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.modal-close:hover { color: #f0ede8; }
+.modal-eyebrow {
+  display: block;
+  color: #e7bd91;
+  font: 500 10px 'DM Mono', monospace;
+  letter-spacing: .16em;
+  margin-bottom: 6px;
+}
+.auth-modal h2 {
+  margin: 8px 0 12px;
+  color: #f3eee7;
+  font: 600 26px 'Playfair Display', Georgia, serif;
+}
+.auth-modal p {
+  margin: 0 0 20px;
+  color: #aaa39a;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.modal-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 44px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.modal-dismiss {
+  margin-top: 12px;
+  padding: 8px 14px;
+  border: 0;
+  background: transparent;
+  color: #b0a89e;
+  font: 13px 'DM Sans', sans-serif;
+  cursor: pointer;
+}
+.modal-dismiss:hover { color: #f0d2ad; }
+
 @media (max-width: 650px) {
   .initial-studio, .site-info { width: calc(100% - 28px); }
   .help-page { width: calc(100% - 28px); }
