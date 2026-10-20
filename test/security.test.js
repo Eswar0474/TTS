@@ -44,6 +44,8 @@ test('responses include browser security headers and reject an untrusted Host', 
   assert.equal(config.headers.get('x-frame-options'), 'DENY');
   assert.equal(config.headers.get('referrer-policy'), 'strict-origin-when-cross-origin');
   assert.match(config.headers.get('content-security-policy'), /frame-ancestors 'none'/);
+  assert.match(config.headers.get('content-security-policy'), /script-src 'self'/);
+  assert.doesNotMatch(config.headers.get('content-security-policy'), /script-src[^;]*unsafe-inline/);
   assert.doesNotMatch(config.headers.get('content-security-policy'), /doubleclick|googlesyndication/);
   assert.equal(config.headers.get('x-robots-tag'), 'noindex, nofollow');
   assert.equal(config.headers.get('cache-control'), 'no-store');

@@ -130,6 +130,8 @@ body { min-width: 320px; margin: 0; background: radial-gradient(ellipse at 50% -
 }
 .pricing-status { padding: 14px 16px; border: 1px solid rgba(201, 154, 107, .3); border-radius: 9px; background: rgba(201, 154, 107, .07); color: #d8c6b2; font-size: 13px; line-height: 1.6; }
 .pricing-status a { color: #e7bd91; }
+.pricing-error { padding: 12px 14px; border: 1px solid rgba(240, 143, 136, .35); border-radius: 8px; background: rgba(240, 143, 136, .08); color: #f08f88; font-size: 13px; line-height: 1.5; }
+.pricing-error[hidden] { display: none; }
 
 /* Pricing Page Auth & Payment Modals */
 .auth-modal-backdrop {
