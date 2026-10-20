@@ -627,22 +627,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
   app.get('/api/health', async (req, res) => {
     try {
       await dailyWordQuota.getUsage(req.ip);
-      let dbInfo = null;
-      if (pool) {
-        let sessions = 'unknown';
-        let users = 'unknown';
-        try {
-          const s = await pool.query('SELECT count(*) FROM session');
-          sessions = s.rows[0].count;
-        } catch (e) { sessions = e.message; }
-        try {
-          const u = await pool.query('SELECT count(*) FROM users');
-          users = u.rows[0].count;
-        } catch (e) { users = e.message; }
-        const info = await pool.query('SELECT current_database() as db, current_user as usr, inet_server_addr() as ip;');
-        dbInfo = { ...info.rows[0], sessions, users };
-      }
-      return res.json({ ok: true, service: 'sonora-proxy', database: pool ? 'connected' : 'memory', dbInfo });
+      return res.json({ ok: true, service: 'sonora-proxy', database: pool ? 'connected' : 'memory' });
     } catch (error) {
       logSafeError(logger, '[sonora] Daily word quota storage failed', error);
       return res.status(503).json({ ok: false, service: 'sonora-proxy' });
