@@ -38,7 +38,7 @@
       </section>
 
       <section class="pricing-grid" aria-label="Monthly plans">
-        <article class="site-info-panel pricing-card">
+        <article class="site-info-panel pricing-card" data-plan="free">
           <p class="site-info-kicker">START CREATING</p>
           <h2>Free</h2>
           <p class="plan-price">₹0 <small>/ month</small></p>
@@ -108,9 +108,9 @@
         fetch('/api/config')
           .then(r => r.json())
           .then(data => {
-            const currentPlan = data.user ? (data.user.plan || 'free').toLowerCase() : null;
+            const currentPlan = data.user ? (data.user.plan || 'free').toLowerCase() : (data.auth && data.auth.signedIn ? 'free' : null);
             const expireDate = data.user && data.user.expireDate ? new Date(data.user.expireDate).toLocaleDateString() : null;
-            if (data.user) {
+            if (data.auth && data.auth.signedIn) {
               const cards = document.querySelectorAll('.pricing-card');
               cards.forEach(card => {
                 const planKey = card.getAttribute('data-plan');
@@ -118,8 +118,6 @@
                 if (planKey === currentPlan && btn) {
                   btn.textContent = 'Active Plan' + (expireDate ? ' (Renews ' + expireDate + ')' : '');
                   btn.disabled = true;
-                  btn.style.opacity = '0.7';
-                  btn.style.cursor = 'default';
                 }
               });
             }

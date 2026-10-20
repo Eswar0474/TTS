@@ -577,22 +577,30 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
     if (pool) {
       try {
         const queryText = hasCustomMinutes
-          ? `UPDATE users
-             SET plan = $1,
-                 expire_date = NOW() + ($3 || ' minutes')::interval,
-                 updated_at = NOW()
-             WHERE google_id = $2
+          ? `INSERT INTO users (google_id, email, name, plan, expire_date, updated_at, last_login_at)
+             VALUES ($1, $2, $3, $4, NOW() + ($5 || ' minutes')::interval, NOW(), NOW())
+             ON CONFLICT (google_id)
+             DO UPDATE SET
+               plan = EXCLUDED.plan,
+               expire_date = EXCLUDED.expire_date,
+               email = CASE WHEN EXCLUDED.email <> '' THEN EXCLUDED.email ELSE users.email END,
+               name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE users.name END,
+               updated_at = NOW()
              RETURNING plan, expire_date`
-          : `UPDATE users
-             SET plan = $1,
-                 expire_date = NOW() + INTERVAL '1 month',
-                 updated_at = NOW()
-             WHERE google_id = $2
+          : `INSERT INTO users (google_id, email, name, plan, expire_date, updated_at, last_login_at)
+             VALUES ($1, $2, $3, $4, NOW() + INTERVAL '1 month', NOW(), NOW())
+             ON CONFLICT (google_id)
+             DO UPDATE SET
+               plan = EXCLUDED.plan,
+               expire_date = EXCLUDED.expire_date,
+               email = CASE WHEN EXCLUDED.email <> '' THEN EXCLUDED.email ELSE users.email END,
+               name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE users.name END,
+               updated_at = NOW()
              RETURNING plan, expire_date`;
 
         const queryParams = hasCustomMinutes
-          ? [chosenPlan, req.session.userId, Math.round(minutes)]
-          : [chosenPlan, req.session.userId];
+          ? [req.session.userId, req.session.userEmail || '', req.session.userName || '', chosenPlan, Math.round(minutes)]
+          : [req.session.userId, req.session.userEmail || '', req.session.userName || '', chosenPlan];
 
         const updateResult = await pool.query(queryText, queryParams);
         if (updateResult.rows[0]) {
@@ -619,7 +627,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
   app.get('/api/health', async (req, res) => {
     try {
       await dailyWordQuota.getUsage(req.ip);
-      return res.json({ ok: true, service: 'sonora-proxy' });
+      return res.json({ ok: true, service: 'sonora-proxy', database: pool ? 'connected' : 'memory' });
     } catch (error) {
       logSafeError(logger, '[sonora] Daily word quota storage failed', error);
       return res.status(503).json({ ok: false, service: 'sonora-proxy' });
@@ -643,13 +651,25 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
             req.session.userName = userRow.rows[0].name;
             req.session.userEmail = userRow.rows[0].email;
             req.session.userExpireDate = userRow.rows[0].expire_date;
-          } else if (!req.session?.userPlan || !req.session?.userEmail) {
+          } else {
             const queryRow = await pool.query('SELECT plan, name, email, expire_date FROM users WHERE google_id = $1', [req.session.userId]);
             if (queryRow.rows[0]) {
               req.session.userPlan = queryRow.rows[0].plan;
               req.session.userName = queryRow.rows[0].name;
               req.session.userEmail = queryRow.rows[0].email;
               req.session.userExpireDate = queryRow.rows[0].expire_date;
+            } else {
+              const insertRow = await pool.query(
+                `INSERT INTO users (google_id, email, name, plan, last_login_at)
+                 VALUES ($1, $2, $3, 'free', NOW())
+                 ON CONFLICT (google_id) DO NOTHING
+                 RETURNING plan, name, email, expire_date`,
+                [req.session.userId, req.session.userEmail || '', req.session.userName || '']
+              );
+              if (insertRow.rows[0]) {
+                req.session.userPlan = insertRow.rows[0].plan;
+                req.session.userExpireDate = insertRow.rows[0].expire_date;
+              }
             }
           }
         } catch (dbError) {
