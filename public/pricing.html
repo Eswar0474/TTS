@@ -58,7 +58,7 @@
             <li>Low Quality and Balanced models</li>
             <li>MP3, AAC, and OGG downloads</li>
           </ul>
-          <button class="plan-action test-subscribe-btn" data-plan="plus" data-name="Plus" data-price="₹20">Subscribe (Test)</button>
+          <button type="button" class="plan-action test-subscribe-btn" data-plan="plus" data-name="Plus" data-price="₹20" onclick="handleSubscribeClick(this)">Subscribe (Test)</button>
         </article>
         <article class="site-info-panel pricing-card featured" data-plan="pro">
           <p class="site-info-kicker">MORE POWER</p>
@@ -69,7 +69,7 @@
             <li>Low Quality, Balanced, and Enhanced Thinking models</li>
             <li>MP3, AAC, OGG, and FLAC downloads</li>
           </ul>
-          <button class="plan-action test-subscribe-btn" data-plan="pro" data-name="Pro" data-price="₹100">Subscribe (Test)</button>
+          <button type="button" class="plan-action test-subscribe-btn" data-plan="pro" data-name="Pro" data-price="₹100" onclick="handleSubscribeClick(this)">Subscribe (Test)</button>
         </article>
         <article class="site-info-panel pricing-card" data-plan="studio">
           <p class="site-info-kicker">FULL STUDIO</p>
@@ -80,7 +80,7 @@
             <li>Full model access</li>
             <li>All formats including Master WAV</li>
           </ul>
-          <button class="plan-action test-subscribe-btn" data-plan="studio" data-name="Studio" data-price="₹250">Subscribe (Test)</button>
+          <button type="button" class="plan-action test-subscribe-btn" data-plan="studio" data-name="Studio" data-price="₹250" onclick="handleSubscribeClick(this)">Subscribe (Test)</button>
         </article>
       </section>
 
@@ -122,7 +122,7 @@
           <small style="display:block;margin-top:6px;color:#8f887f;font-size:11px;line-height:1.4;">Enter <strong>1</strong> for 1 minute (to test the sweeper immediately), or clear the box to use the standard <strong>1 month</strong>.</small>
         </div>
 
-        <button id="modal-confirm-pay-btn" class="plan-action modal-action-btn" style="background:#c99a6b;color:#0d0f14;font-weight:700;">Yes, Complete Payment</button>
+        <button id="modal-confirm-pay-btn" type="button" class="plan-action modal-action-btn" onclick="handleConfirmPayment(this)" style="background:#c99a6b;color:#0d0f14;font-weight:700;">Yes, Complete Payment</button>
         <div id="payment-error-msg" style="display:none;color:#f08f88;font-size:12px;margin-top:10px;"></div>
         <button class="modal-dismiss" onclick="closeModals()">Cancel</button>
       </section>
@@ -160,6 +160,98 @@
         });
       });
 
+      window.handleSubscribeClick = async function(btn) {
+        const planKey = btn.getAttribute('data-plan');
+        const planName = btn.getAttribute('data-name');
+        const planPrice = btn.getAttribute('data-price');
+        selectedPlanKey = planKey;
+        selectedPlanName = planName;
+
+        // Ensure activeAuthData is available
+        if (!activeAuthData) {
+          try {
+            const res = await fetch('/api/config');
+            activeAuthData = await res.json();
+          } catch (err) {
+            console.warn('[pricing] config fetch failed', err);
+          }
+        }
+
+        // If user is NOT signed in with Google, show the Sign-In modal!
+        if (!activeAuthData?.auth?.signedIn) {
+          const nameSpan = document.getElementById('signin-plan-name');
+          if (nameSpan) nameSpan.textContent = planName;
+          const signinModal = document.getElementById('signin-modal');
+          if (signinModal) signinModal.style.display = 'grid';
+          return;
+        }
+
+        // If user IS signed in, show the Payment & Expiry Modal!
+        const planNameEl = document.getElementById('payment-plan-name');
+        if (planNameEl) planNameEl.textContent = planName;
+        const planPriceEl = document.getElementById('payment-plan-price');
+        if (planPriceEl) planPriceEl.textContent = planPrice + ' / month';
+        const expiryInput = document.getElementById('expiry-minutes-input');
+        if (expiryInput) expiryInput.value = '1';
+        const errorDiv = document.getElementById('payment-error-msg');
+        if (errorDiv) errorDiv.style.display = 'none';
+        const confirmBtn = document.getElementById('modal-confirm-pay-btn');
+        if (confirmBtn) {
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = 'Yes, Complete Payment';
+          confirmBtn.style.background = '#c99a6b';
+          confirmBtn.style.color = '#0d0f14';
+        }
+        const paymentModal = document.getElementById('payment-modal');
+        if (paymentModal) paymentModal.style.display = 'grid';
+      };
+
+      window.handleConfirmPayment = async function(payBtn) {
+        if (!selectedPlanKey) {
+          alert('Please select a plan first.');
+          return;
+        }
+        const durationInput = document.getElementById('expiry-minutes-input')?.value?.trim();
+        const durationMinutes = durationInput && !isNaN(parseFloat(durationInput)) ? parseFloat(durationInput) : null;
+        const errorDiv = document.getElementById('payment-error-msg');
+        if (errorDiv) errorDiv.style.display = 'none';
+
+        try {
+          payBtn.disabled = true;
+          payBtn.textContent = 'Processing payment...';
+
+          const res = await fetch('/api/plans/subscribe-test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ plan: selectedPlanKey, confirm: true, durationMinutes })
+          });
+          const result = await res.json();
+          if (res.ok) {
+            payBtn.textContent = '✓ Payment Successful!';
+            payBtn.style.background = '#22c55e';
+            payBtn.style.color = '#fff';
+            setTimeout(() => {
+              window.location.reload();
+            }, 800);
+          } else {
+            if (errorDiv) {
+              errorDiv.textContent = result.error || 'Subscription failed. Please try again.';
+              errorDiv.style.display = 'block';
+            }
+            payBtn.disabled = false;
+            payBtn.textContent = 'Yes, Complete Payment';
+          }
+        } catch (err) {
+          if (errorDiv) {
+            errorDiv.textContent = 'Network error: ' + err.message;
+            errorDiv.style.display = 'block';
+          }
+          payBtn.disabled = false;
+          payBtn.textContent = 'Yes, Complete Payment';
+        }
+      };
+
+      // Initial config load for plan indicators
       (function() {
         fetch('/api/config')
           .then(r => r.json())
@@ -174,77 +266,8 @@
                 const btn = card.querySelector('.test-subscribe-btn, .plan-action');
                 if (planKey === currentPlan && btn) {
                   btn.textContent = 'Active Plan' + (expireDate ? ' (Renews ' + expireDate + ')' : '');
-                  btn.disabled = true;
-                }
-              });
-            }
-
-            document.querySelectorAll('.test-subscribe-btn').forEach(btn => {
-              btn.addEventListener('click', function() {
-                const planKey = this.getAttribute('data-plan');
-                const planName = this.getAttribute('data-name');
-                const planPrice = this.getAttribute('data-price');
-                selectedPlanKey = planKey;
-                selectedPlanName = planName;
-
-                // If user is NOT signed in with Google, show the Sign-In modal!
-                if (!activeAuthData?.auth?.signedIn) {
-                  document.getElementById('signin-plan-name').textContent = planName;
-                  document.getElementById('signin-modal').style.display = 'grid';
-                  return;
-                }
-
-                // If user IS signed in, show the Payment & Expiry Modal!
-                document.getElementById('payment-plan-name').textContent = planName;
-                document.getElementById('payment-plan-price').textContent = planPrice + ' / month';
-                document.getElementById('expiry-minutes-input').value = '1';
-                document.getElementById('payment-error-msg').style.display = 'none';
-                const confirmBtn = document.getElementById('modal-confirm-pay-btn');
-                confirmBtn.disabled = false;
-                confirmBtn.textContent = 'Yes, Complete Payment';
-                confirmBtn.style.background = '#c99a6b';
-                confirmBtn.style.color = '#0d0f14';
-                document.getElementById('payment-modal').style.display = 'grid';
-              });
-            });
-
-            const confirmPayBtn = document.getElementById('modal-confirm-pay-btn');
-            if (confirmPayBtn) {
-              confirmPayBtn.addEventListener('click', async function() {
-                const durationInput = document.getElementById('expiry-minutes-input').value.trim();
-                const durationMinutes = durationInput && !isNaN(parseFloat(durationInput)) ? parseFloat(durationInput) : null;
-                const payBtn = this;
-                const errorDiv = document.getElementById('payment-error-msg');
-                errorDiv.style.display = 'none';
-
-                try {
-                  payBtn.disabled = true;
-                  payBtn.textContent = 'Processing payment...';
-
-                  const res = await fetch('/api/plans/subscribe-test', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ plan: selectedPlanKey, confirm: true, durationMinutes })
-                  });
-                  const result = await res.json();
-                  if (res.ok) {
-                    payBtn.textContent = '✓ Payment Successful!';
-                    payBtn.style.background = '#22c55e';
-                    payBtn.style.color = '#fff';
-                    setTimeout(() => {
-                      window.location.reload();
-                    }, 900);
-                  } else {
-                    errorDiv.textContent = result.error || 'Subscription failed. Please try again.';
-                    errorDiv.style.display = 'block';
-                    payBtn.disabled = false;
-                    payBtn.textContent = 'Yes, Complete Payment';
-                  }
-                } catch (err) {
-                  errorDiv.textContent = 'Network error: ' + err.message;
-                  errorDiv.style.display = 'block';
-                  payBtn.disabled = false;
-                  payBtn.textContent = 'Yes, Complete Payment';
+                  btn.style.opacity = '0.75';
+                  btn.title = 'Current active plan. Click to change or test expiry duration.';
                 }
               });
             }
