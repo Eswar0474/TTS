@@ -51,10 +51,11 @@ export async function transcodeAudio(wavBytes, format) {
     const result = await ffmpeg.readFile(outputName);
     if (!(result instanceof Uint8Array) || !result.byteLength) throw new Error('Audio conversion returned an empty file.');
     return result;
+  } catch (error) {
+    ffmpegPromise = undefined;
+    throw error;
   } finally {
-    const files = await ffmpeg.listDir('/');
-    for (const name of [inputName, outputName]) {
-      if (files.some((file) => file.name === name)) await ffmpeg.deleteFile(name);
-    }
+    try { await ffmpeg.deleteFile(inputName); } catch {}
+    try { await ffmpeg.deleteFile(outputName); } catch {}
   }
 }

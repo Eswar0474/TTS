@@ -6,7 +6,18 @@ import { fileURLToPath } from 'node:url';
 export const DAILY_WORD_LIMIT = 1_000;
 export const GUEST_DAILY_WORD_LIMIT = 50;
 
-const limitForSubject = subjectType => subjectType === 'user' ? DAILY_WORD_LIMIT : GUEST_DAILY_WORD_LIMIT;
+export const PLAN_WORD_LIMITS = Object.freeze({
+  guest: GUEST_DAILY_WORD_LIMIT,
+  free: DAILY_WORD_LIMIT,
+  plus: 2_000,
+  pro: 3_000,
+  studio: 1_000_000
+});
+
+const limitForSubject = (subjectType, customLimit) => {
+  if (Number.isSafeInteger(customLimit) && customLimit > 0) return customLimit;
+  return subjectType === 'user' ? DAILY_WORD_LIMIT : GUEST_DAILY_WORD_LIMIT;
+};
 
 const migrationsPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'migrations');
 const migrations = readdirSync(migrationsPath)
@@ -83,19 +94,19 @@ export function createPostgresDailyWordQuota({ pool, secret, now = () => new Dat
     return formatUsage(Number(result.rows[0]?.words_used ?? 0), day, limit);
   };
 
-  const getUsageFor = async (subjectType, subjectId) => {
+  const getUsageFor = async (subjectType, subjectId, customLimit) => {
     if (!['ip', 'user'].includes(subjectType) || subjectId == null || !String(subjectId)) throw new TypeError('Invalid quota subject.');
     await ready;
     const day = today();
-    return readUsage(subjectType, hashedSubject(subjectType, subjectId), day, limitForSubject(subjectType));
+    return readUsage(subjectType, hashedSubject(subjectType, subjectId), day, limitForSubject(subjectType, customLimit));
   };
-  const consumeFor = async (subjectType, subjectId, words) => {
+  const consumeFor = async (subjectType, subjectId, words, customLimit) => {
     if (!['ip', 'user'].includes(subjectType) || subjectId == null || !String(subjectId)) throw new TypeError('Invalid quota subject.');
     if (!Number.isSafeInteger(words) || words <= 0) throw new RangeError('Word usage must be a positive integer.');
     await ready;
     const day = today();
     const hash = hashedSubject(subjectType, subjectId);
-    const limit = limitForSubject(subjectType);
+    const limit = limitForSubject(subjectType, customLimit);
     const result = await pool.query(
       `INSERT INTO daily_word_usage (usage_date, subject_type, subject_hash, words_used)
        VALUES ($1, $2, $3, $4)
@@ -122,31 +133,31 @@ export function createMemoryDailyWordQuota({ secret, now = () => new Date() }) {
   if (typeof secret !== 'string' || !secret) throw new TypeError('A quota hashing secret is required.');
   const usage = new Map();
   const keyFor = (type, subjectId, day) => `${day}:${createHmac('sha256', secret).update(`${type}:${String(subjectId)}`).digest('hex')}`;
-  const snapshot = (type, subjectId) => {
+  const snapshot = (type, subjectId, customLimit) => {
     const day = now().toISOString().slice(0, 10);
     const key = keyFor(type, subjectId, day);
     const used = usage.get(key) ?? 0;
     const reset = new Date(`${day}T00:00:00.000Z`);
     reset.setUTCDate(reset.getUTCDate() + 1);
-    const limit = limitForSubject(type);
+    const limit = limitForSubject(type, customLimit);
     const boundedUsed = Math.min(used, limit);
     return { key, dailyWordQuota: { limit, used: boundedUsed, remaining: limit - boundedUsed, resetsAt: reset.toISOString() } };
   };
-  const getUsageFor = async (type, subjectId) => {
+  const getUsageFor = async (type, subjectId, customLimit) => {
     if (!['ip', 'user'].includes(type) || subjectId == null || !String(subjectId)) throw new TypeError('Invalid quota subject.');
-    return snapshot(type, subjectId).dailyWordQuota;
+    return snapshot(type, subjectId, customLimit).dailyWordQuota;
   };
-  const consumeFor = async (type, subjectId, words) => {
+  const consumeFor = async (type, subjectId, words, customLimit) => {
     if (!['ip', 'user'].includes(type) || subjectId == null || !String(subjectId)) throw new TypeError('Invalid quota subject.');
-      if (!Number.isSafeInteger(words) || words <= 0) throw new RangeError('Word usage must be a positive integer.');
-      const current = snapshot(type, subjectId);
-      if (words > current.dailyWordQuota.remaining) return { allowed: false, dailyWordQuota: current.dailyWordQuota };
-      const used = current.dailyWordQuota.used + words;
-      usage.set(current.key, used);
-      return {
-        allowed: true,
-        dailyWordQuota: { ...current.dailyWordQuota, used, remaining: current.dailyWordQuota.limit - used }
-      };
+    if (!Number.isSafeInteger(words) || words <= 0) throw new RangeError('Word usage must be a positive integer.');
+    const current = snapshot(type, subjectId, customLimit);
+    if (words > current.dailyWordQuota.remaining) return { allowed: false, dailyWordQuota: current.dailyWordQuota };
+    const used = current.dailyWordQuota.used + words;
+    usage.set(current.key, used);
+    return {
+      allowed: true,
+      dailyWordQuota: { ...current.dailyWordQuota, used, remaining: current.dailyWordQuota.limit - used }
+    };
   };
   return {
     getUsageFor,

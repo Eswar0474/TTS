@@ -434,17 +434,27 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
   const quotaSubject = req => req.session?.userId
     ? { type: 'user', id: req.session.userId }
     : { type: 'ip', id: req.ip };
+  const getPlanInfo = req => {
+    const signedIn = Boolean(req.session?.userId);
+    const plan = signedIn ? (req.session?.userPlan || 'free').toLowerCase() : 'guest';
+    const isStudio = plan === 'studio';
+    const isUnlimited = Boolean(isAdmin(req) || isStudio);
+    const limit = isStudio ? 1_000_000 : plan === 'pro' ? 3_000 : plan === 'plus' ? 2_000 : signedIn ? 1_000 : 50;
+    return { plan, signedIn, isUnlimited, limit };
+  };
   const readDailyQuota = req => {
     const subject = quotaSubject(req);
-    return dailyWordQuota.getUsageFor(subject.type, subject.id).then(quota =>
-      isAdmin(req) ? { ...quota, unlimited: true } : quota);
+    const { isUnlimited, limit } = getPlanInfo(req);
+    return dailyWordQuota.getUsageFor(subject.type, subject.id, limit).then(quota =>
+      isUnlimited ? { ...quota, limit, unlimited: true } : { ...quota, limit });
   };
   const reserveDailyQuota = (req, words) => {
     const subject = quotaSubject(req);
-    if (isAdmin(req)) {
+    const { isUnlimited, limit } = getPlanInfo(req);
+    if (isUnlimited) {
       return readDailyQuota(req).then(dailyWordQuota => ({ allowed: true, dailyWordQuota }));
     }
-    return dailyWordQuota.consumeFor(subject.type, subject.id, words);
+    return dailyWordQuota.consumeFor(subject.type, subject.id, words, limit);
   };
   app.get('/auth/google', (req, res) => {
     if (!oauthEnabled) return res.status(503).send('Google sign-in is not configured.');

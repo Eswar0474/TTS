@@ -115,3 +115,30 @@ test('PostgreSQL schema initialization succeeds when transaction poolers reject 
   assert.equal(result.used, 0);
   assert.equal(result.limit, 50);
 });
+
+test('plan word limits apply custom quotas for plus, pro, and studio', async () => {
+  const pool = createFakePostgresPool();
+  const quota = createPostgresDailyWordQuota({
+    pool,
+    secret: 'plan-test-secret',
+    now: () => new Date('2026-10-12T12:00:00.000Z')
+  });
+
+  const plusUsage = await quota.getUsageFor('user', 'user_plus', 2000);
+  assert.equal(plusUsage.limit, 2000);
+  assert.equal(plusUsage.remaining, 2000);
+
+  const plusConsume = await quota.consumeFor('user', 'user_plus', 1500, 2000);
+  assert.equal(plusConsume.allowed, true);
+  assert.equal(plusConsume.dailyWordQuota.used, 1500);
+  assert.equal(plusConsume.dailyWordQuota.remaining, 500);
+
+  const proUsage = await quota.getUsageFor('user', 'user_pro', 3000);
+  assert.equal(proUsage.limit, 3000);
+  assert.equal(proUsage.remaining, 3000);
+
+  const proConsume = await quota.consumeFor('user', 'user_pro', 2500, 3000);
+  assert.equal(proConsume.allowed, true);
+  assert.equal(proConsume.dailyWordQuota.used, 2500);
+  assert.equal(proConsume.dailyWordQuota.remaining, 500);
+});
