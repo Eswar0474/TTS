@@ -11,6 +11,11 @@ import { formatResetCountdown } from './quota-display.js';
 
 const SAMPLE = 'The future is not a destination. It is a rhythm we learn to move with.';
 const ALLOWED_QUOTA_LIMITS = [50, 1000, 2000, 3000, 1000000];
+const canShareFile = (file) => {
+  if (!file || typeof navigator.share !== 'function' || typeof navigator.canShare !== 'function') return false;
+  try { return navigator.canShare({ files: [file] }); }
+  catch { return false; }
+};
 const validDailyWordQuota = (quota) => quota && ALLOWED_QUOTA_LIMITS.includes(quota.limit) &&
   Number.isSafeInteger(quota.used) && quota.used >= 0 && quota.used <= quota.limit &&
   quota.remaining === quota.limit - quota.used &&
@@ -67,6 +72,7 @@ function App() {
   const [audioUrl, setAudioUrl] = useState('');
   const [audioFormat, setAudioFormat] = useState('mp3');
   const [downloading, setDownloading] = useState(false);
+  const [preparedExport, setPreparedExport] = useState(null);
   const [downloadError, setDownloadError] = useState('');
   const [authPrompt, setAuthPrompt] = useState(null);
   const [clockNow, setClockNow] = useState(Date.now());
@@ -76,6 +82,7 @@ function App() {
   const requestRef = useRef(null);
   const configRequestRef = useRef(null);
   const audioUrlRef = useRef('');
+  const preparedExportRef = useRef(null);
   const wavBytesRef = useRef(null);
   const downloadLockRef = useRef(false);
   const resetRefreshRef = useRef('');
@@ -88,6 +95,13 @@ function App() {
     audioUrlRef.current = '';
     wavBytesRef.current = null;
     setAudioUrl('');
+    clearPreparedExport();
+  }
+
+  function clearPreparedExport() {
+    if (preparedExportRef.current?.url) URL.revokeObjectURL(preparedExportRef.current.url);
+    preparedExportRef.current = null;
+    setPreparedExport(null);
   }
 
   function resetOutput() {
@@ -166,6 +180,7 @@ function App() {
       mountedRef.current = false;
       requestRef.current?.abort(); configRequestRef.current?.abort();
       if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
+      if (preparedExportRef.current?.url) URL.revokeObjectURL(preparedExportRef.current.url);
     };
   }, []);
 
@@ -180,7 +195,7 @@ function App() {
   }, []);
 
   const generating = status === 'generating';
-  const busy = generating;
+  const busy = generating || downloading;
    const selectedModel = config?.models.find((model) => model.id === modelId);
    const modelPresentation = selectedModel ? getModelPresentation(selectedModel) : null;
    const limit = selectedModel?.characterLimit;
@@ -203,6 +218,7 @@ function App() {
    const isAdmin = Boolean(config?.auth?.admin);
    const isPaid = ['plus', 'pro', 'studio'].includes(userPlan);
    const hasEnhancedAccess = isAdmin || ['pro', 'studio'].includes(userPlan);
+   const canSharePreparedExport = canShareFile(preparedExport?.file);
    const availability = getAvailability({
      configStatus,
      configured: config?.configured,
@@ -260,6 +276,7 @@ function App() {
       return;
     }
     setDownloadError('');
+    clearPreparedExport();
     setAudioFormat(format);
   }
 
@@ -273,22 +290,43 @@ function App() {
     setDownloading(true);
     setDownloadError('');
     try {
+      const formatKey = audioFormat;
       const { transcodeAudio } = await import('./audio-export.js');
-      const bytes = await transcodeAudio(wavBytesRef.current, audioFormat);
-      const format = AUDIO_FORMATS[audioFormat];
-      const downloadUrl = URL.createObjectURL(new Blob([bytes], { type: format.mimeType }));
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      link.download = `sonora-speech.${format.extension}`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(downloadUrl), 60_000);
+      const bytes = await transcodeAudio(wavBytesRef.current, formatKey);
+      const format = AUDIO_FORMATS[formatKey];
+      const filename = `sonora-speech.${format.extension}`;
+      const blob = new Blob([bytes], { type: format.mimeType });
+      const file = typeof File === 'function' ? new File([blob], filename, { type: format.mimeType }) : null;
+      const nextExport = {
+        url: URL.createObjectURL(blob),
+        filename,
+        format: formatKey,
+        file
+      };
+      clearPreparedExport();
+      preparedExportRef.current = nextExport;
+      setPreparedExport(nextExport);
     } catch (err) {
       setDownloadError(err instanceof Error ? err.message : 'Audio download could not be prepared.');
     } finally {
       downloadLockRef.current = false;
       setDownloading(false);
+    }
+  }
+
+  async function sharePreparedExport() {
+    const file = preparedExport?.file;
+    if (!file || typeof navigator.share !== 'function' ||
+        typeof navigator.canShare !== 'function' || !navigator.canShare({ files: [file] })) {
+      setDownloadError('File sharing is not supported here. Use the Save file link instead.');
+      return;
+    }
+    setDownloadError('');
+    try {
+      await navigator.share({ files: [file], title: 'Sonora speech' });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return;
+      setDownloadError(err instanceof Error ? err.message : 'The file could not be shared.');
     }
   }
 
@@ -299,7 +337,7 @@ function App() {
   }
 
   async function generate() {
-    if (requestRef.current || !ready) return;
+    if (requestRef.current || downloadLockRef.current || !ready) return;
     setError('');
     if (!text.trim()) return setError('Add some text before generating audio.');
     if (overLimit) return setError(`Limit: ${limit.toLocaleString()} characters per request.`);
@@ -422,8 +460,9 @@ function App() {
       <section className={`output-panel ${audioUrl ? 'has-audio' : ''} ${generating ? 'is-generating' : ''}`}>
         <div className="output-label"><span className="step">03</span><div><h2>{audioUrl ? 'Preview your narration' : 'Audio output'}</h2><p role="status">{generating ? `Generating audio · ${progress.completed} of ${progress.total || '…'} segments complete` : audioUrl ? 'Preview the audio below, choose a format, and download.' : status === 'cancelled' ? 'Generation cancelled · No partial file saved' : status === 'error' ? 'Generation failed · No partial file saved' : 'Your completed audio will be available here.'}</p></div></div>
         {generating && <div className="generation-progress"><div className="progress-caption"><span>Generation progress</span><strong>{progressPercent}%</strong></div><progress aria-label="Generation progress" value={progressPercent} max="100" /></div>}
-        <div className="output-controls">{generating && <button className="cancel-button" onClick={cancel}>Cancel generation</button>}{audioUrl && <><audio controls preload="metadata" src={audioUrl} aria-label="Preview completed narration" /><label className="format-picker">DOWNLOAD FORMAT<select aria-label="Download format" value={audioFormat} disabled={downloading || configStatus !== 'ready'} onChange={(event) => selectAudioFormat(event.target.value)}>{Object.entries(AUDIO_FORMATS).map(([format, details]) => { const allowed = isFormatAllowed(format, userPlan, isAdmin); const minPlan = FORMAT_MIN_PLAN[format] || 'Free'; const tag = !allowed ? ` · ${minPlan}${minPlan === 'Studio' ? '' : '+'}` : ''; return <option key={format} value={format}>{details.label}{tag}</option>; })}</select></label><button className="download-button" disabled={downloading} onClick={downloadAudio}>{downloading ? 'Preparing…' : `Download ${AUDIO_FORMATS[audioFormat].label} ↓`}</button></>}</div>
-        {audioUrl && <p className="format-note">First export loads the audio encoder (~32 MB). Conversion runs in your browser; audio stays on your device.</p>}
+        <div className="output-controls">{generating && <button className="cancel-button" onClick={cancel}>Cancel generation</button>}{audioUrl && <><audio controls preload="metadata" src={audioUrl} aria-label="Preview completed narration" /><label className="format-picker">DOWNLOAD FORMAT<select aria-label="Download format" value={audioFormat} disabled={downloading || configStatus !== 'ready'} onChange={(event) => selectAudioFormat(event.target.value)}>{Object.entries(AUDIO_FORMATS).map(([format, details]) => { const allowed = isFormatAllowed(format, userPlan, isAdmin); const minPlan = FORMAT_MIN_PLAN[format] || 'Free'; const tag = !allowed ? ` · ${minPlan}${minPlan === 'Studio' ? '' : '+'}` : ''; return <option key={format} value={format}>{details.label}{tag}</option>; })}</select></label>{preparedExport?.format === audioFormat ? <><a className="download-button" href={preparedExport.url} download={preparedExport.filename}>Save {AUDIO_FORMATS[audioFormat].label} file ↓</a>{canSharePreparedExport && <button className="download-button" onClick={sharePreparedExport}>Share / Save file ↗</button>}</> : <button className="download-button" disabled={downloading} onClick={downloadAudio}>{downloading ? 'Preparing…' : `Prepare ${AUDIO_FORMATS[audioFormat].label} ↓`}</button>}</>}</div>
+        {preparedExport?.format === audioFormat && <p className="format-note" role="status">Your {AUDIO_FORMATS[audioFormat].label} is ready. Tap Save file, or use Share / Save on supported phones.</p>}
+        {audioUrl && !preparedExport && <p className="format-note">First export loads the audio encoder (~32 MB). Conversion runs in your browser; audio stays on your device. On phones, tap Prepare, then Save file or Share / Save.</p>}
         {audioUrl && !isAdmin && userPlan !== 'studio' && <p className="format-note">Plus adds AAC &amp; OGG, Pro adds FLAC, and Studio includes Master WAV. <a href="/pricing">See plans</a>.</p>}
         {downloadError && <p className="error-text download-error" role="alert">{downloadError}</p>}
         {!audioUrl && !generating && <div className="empty-wave">{[...Array(32)].map((_, i) => <i key={i} style={{ height: `${10 + (i * 17) % 38}px` }} />)}</div>}

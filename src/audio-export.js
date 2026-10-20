@@ -52,6 +52,7 @@ export async function transcodeAudio(wavBytes, format) {
     if (!(result instanceof Uint8Array) || !result.byteLength) throw new Error('Audio conversion returned an empty file.');
     return result;
   } catch (error) {
+    ffmpeg.terminate();
     ffmpegPromise = undefined;
     throw error;
   } finally {
