@@ -230,7 +230,7 @@ export async function sweepExpiredSubscriptions(pool, logger = console) {
   try {
     const result = await pool.query(
       `UPDATE users
-       SET plan = 'free', updated_at = NOW()
+       SET plan = 'free', expire_date = NULL, updated_at = NOW()
        WHERE expire_date IS NOT NULL AND expire_date <= NOW() AND plan <> 'free'
        RETURNING google_id, email, plan`
     );
@@ -448,7 +448,12 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
   };
   app.get('/auth/google', (req, res) => {
     if (!oauthEnabled) return res.status(503).send('Google sign-in is not configured.');
-    req.session.oauth = { state: randomUUID(), nonce: randomUUID() };
+    const returnTo = typeof req.query?.returnTo === 'string' &&
+      req.query.returnTo.startsWith('/') &&
+      !req.query.returnTo.startsWith('//')
+      ? req.query.returnTo
+      : '/';
+    req.session.oauth = { state: randomUUID(), nonce: randomUUID(), returnTo };
     const { state, nonce } = req.session.oauth;
     return req.session.save(error => {
       if (error) {
@@ -481,6 +486,11 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
       return res.status(400).send('Google sign-in could not be verified. Return to Sonora and try again.');
     }
     const expectedNonce = pending.nonce;
+    const returnTo = typeof pending.returnTo === 'string' &&
+      pending.returnTo.startsWith('/') &&
+      !pending.returnTo.startsWith('//')
+      ? pending.returnTo
+      : '/';
     delete req.session.oauth;
     try {
       await new Promise((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()));
@@ -524,6 +534,10 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
                  WHEN users.expire_date IS NOT NULL AND users.expire_date <= NOW() THEN 'free'
                  ELSE users.plan
                END,
+               expire_date = CASE
+                 WHEN users.expire_date IS NOT NULL AND users.expire_date <= NOW() THEN NULL
+                 ELSE users.expire_date
+               END,
                last_login_at = NOW(),
                updated_at = NOW()
              RETURNING plan, name, email, expire_date`,
@@ -541,7 +555,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
       req.session.userName = name;
       req.session.userEmail = email;
       await new Promise((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()));
-      return res.redirect('/');
+      return res.redirect(returnTo);
     } catch (error) {
       logSafeError(logger, '[sonora] Could not persist Google account session', error);
       return res.status(503).send('Google sign-in is temporarily unavailable.');
@@ -573,34 +587,34 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
 
     const minutes = Number(durationMinutes);
     const hasCustomMinutes = Number.isFinite(minutes) && minutes > 0;
+    const targetExpireDate = hasCustomMinutes
+      ? new Date(Date.now() + Math.round(minutes) * 60_000)
+      : (() => {
+          const d = new Date();
+          d.setMonth(d.getMonth() + 1);
+          return d;
+        })();
 
     if (pool) {
       try {
-        const queryText = hasCustomMinutes
-          ? `INSERT INTO users (google_id, email, name, plan, expire_date, updated_at, last_login_at)
-             VALUES ($1, $2, $3, $4, NOW() + ($5 || ' minutes')::interval, NOW(), NOW())
-             ON CONFLICT (google_id)
-             DO UPDATE SET
-               plan = EXCLUDED.plan,
-               expire_date = EXCLUDED.expire_date,
-               email = CASE WHEN EXCLUDED.email <> '' THEN EXCLUDED.email ELSE users.email END,
-               name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE users.name END,
-               updated_at = NOW()
-             RETURNING plan, expire_date`
-          : `INSERT INTO users (google_id, email, name, plan, expire_date, updated_at, last_login_at)
-             VALUES ($1, $2, $3, $4, NOW() + INTERVAL '1 month', NOW(), NOW())
-             ON CONFLICT (google_id)
-             DO UPDATE SET
-               plan = EXCLUDED.plan,
-               expire_date = EXCLUDED.expire_date,
-               email = CASE WHEN EXCLUDED.email <> '' THEN EXCLUDED.email ELSE users.email END,
-               name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE users.name END,
-               updated_at = NOW()
-             RETURNING plan, expire_date`;
+        const queryText = `INSERT INTO users (google_id, email, name, plan, expire_date, updated_at, last_login_at)
+           VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+           ON CONFLICT (google_id)
+           DO UPDATE SET
+             plan = EXCLUDED.plan,
+             expire_date = EXCLUDED.expire_date,
+             email = CASE WHEN EXCLUDED.email <> '' THEN EXCLUDED.email ELSE users.email END,
+             name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE users.name END,
+             updated_at = NOW()
+           RETURNING plan, expire_date`;
 
-        const queryParams = hasCustomMinutes
-          ? [req.session.userId, req.session.userEmail || '', req.session.userName || '', chosenPlan, Math.round(minutes)]
-          : [req.session.userId, req.session.userEmail || '', req.session.userName || '', chosenPlan];
+        const queryParams = [
+          req.session.userId,
+          req.session.userEmail || '',
+          req.session.userName || '',
+          chosenPlan,
+          targetExpireDate
+        ];
 
         const updateResult = await pool.query(queryText, queryParams);
         if (updateResult.rows[0]) {
@@ -609,13 +623,21 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
         }
       } catch (dbError) {
         logSafeError(logger, '[sonora] Could not update user subscription', dbError);
-        return res.status(500).json({ error: 'Failed to update subscription.' });
+        return res.status(500).json({ error: 'Failed to update subscription in database.' });
       }
     } else {
       req.session.userPlan = chosenPlan;
-      const expire = new Date(Date.now() + (hasCustomMinutes ? Math.round(minutes) * 60_000 : 30 * 24 * 60 * 60_000));
-      req.session.userExpireDate = expire.toISOString();
+      req.session.userExpireDate = targetExpireDate.toISOString();
     }
+
+    try {
+      await new Promise((resolve, reject) => {
+        req.session.save(err => (err ? reject(err) : resolve()));
+      });
+    } catch (saveError) {
+      logSafeError(logger, '[sonora] Could not persist session on subscription update', saveError);
+    }
+
     return res.json({
       ok: true,
       plan: req.session.userPlan,
@@ -641,7 +663,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
         try {
           const userRow = await pool.query(
             `UPDATE users
-             SET plan = 'free', updated_at = NOW()
+             SET plan = 'free', expire_date = NULL, updated_at = NOW()
              WHERE google_id = $1 AND expire_date IS NOT NULL AND expire_date <= NOW() AND plan <> 'free'
              RETURNING plan, name, email, expire_date`,
             [req.session.userId]
