@@ -1,6 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MODEL_LIMITS, SYSTEM_INSTRUCTION, splitIntoChunks, getSpeechChunks, decodeBase64PCM, wavHeader, VOICES } from '../server/index.js';
+import {
+  MODEL_LIMITS,
+  SYSTEM_INSTRUCTION,
+  SPEECH_CHUNK_MAX_WORDS,
+  SPEECH_CHUNK_MAX_CHARACTERS,
+  splitIntoChunks,
+  getSpeechChunks,
+  decodeBase64PCM,
+  wavHeader,
+  VOICES
+} from '../server/index.js';
 
 test('default and remaining model application caps are retained', () => {
   assert.equal(MODEL_LIMITS['gemini-2.5-flash-native-audio-dialog'], 1_000_000);
@@ -21,6 +31,45 @@ test('chunking preserves exact input and enforces unpunctuated word bounds', () 
     assert.ok(chunks.every(chunk => (chunk.match(/\S+/g) || []).length <= 2));
   }
   assert.throws(() => splitIntoChunks('test', 0), RangeError);
+});
+test('chunking applies word and character bounds across English, Telugu, Hindi, and German', () => {
+  const samples = [
+    'This is an English sentence with expressive narration. '.repeat(30),
+    'ఇది తెలుగు కథనం కోసం ఉపయోగించే ఒక భావోద్వేగ వాక్యం. '.repeat(30),
+    'यह हिंदी कहानी के लिए इस्तेमाल किया जाने वाला एक भावपूर्ण वाक्य है। '.repeat(30),
+    'Dies ist ein deutscher Erzähltext mit ausdrucksstarken Sätzen. '.repeat(30)
+  ];
+
+  for (const input of samples) {
+    const chunks = splitIntoChunks(input);
+    assert.equal(chunks.join(''), input);
+    assert.ok(chunks.length > 1);
+    assert.ok(chunks.every(chunk => (chunk.match(/\S+/gu) || []).length <= SPEECH_CHUNK_MAX_WORDS));
+    assert.ok(chunks.every(chunk => chunk.length <= SPEECH_CHUNK_MAX_CHARACTERS));
+
+    const speechChunks = getSpeechChunks(input);
+    assert.equal(speechChunks.join(''), input);
+    assert.ok(speechChunks.every(chunk => chunk.trim().length > 0));
+    assert.ok(speechChunks.every(chunk => chunk.length <= SPEECH_CHUNK_MAX_CHARACTERS));
+  }
+});
+test('chunking recognizes Indic sentence punctuation and preserves long tokens and surrogate pairs', () => {
+  const multilingual = 'ఇది మొదటి వాక్యం। ఇది రెండవ వాక్యం॥ यह पहला वाक्य है। यह दूसरा वाक्य है॥';
+  const multilingualChunks = splitIntoChunks(multilingual, 100, 30);
+  assert.equal(multilingualChunks.join(''), multilingual);
+  assert.ok(multilingualChunks.every(chunk => chunk.length <= 30));
+
+  const longToken = 'Donaudampfschifffahrtsgesellschaftskapitän'.repeat(40);
+  const longTokenChunks = splitIntoChunks(longToken, 100, 750);
+  assert.equal(longTokenChunks.join(''), longToken);
+  assert.ok(longTokenChunks.every(chunk => chunk.length <= 750));
+
+  const emojiText = '😀'.repeat(401);
+  const emojiChunks = splitIntoChunks(emojiText, 100, 11);
+  assert.equal(emojiChunks.join(''), emojiText);
+  assert.ok(emojiChunks.every(chunk => chunk.length <= 11));
+  assert.ok(emojiChunks.every(chunk => !/[\uD800-\uDBFF]$/.test(chunk) && !/^[\uDC00-\uDFFF]/.test(chunk)));
+  assert.throws(() => splitIntoChunks('test', 2, 0), RangeError);
 });
 test('provider speech chunks never contain whitespace-only turns', () => {
   const input = `${' '.repeat(4_000)}Hello.\n${'\t'.repeat(4_000)}World.`;

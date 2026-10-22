@@ -389,7 +389,7 @@ test('Pro plan accepts full 3000-word payload in a single request and enforces l
   const events = rawStream.trim().split('\n').map(line => JSON.parse(line));
   assert.equal(events[0].type, 'start');
   assert.equal(events[0].sampleRate, 24000);
-  assert.equal(events[0].totalChunks, 17);
+  assert.equal(events[0].totalChunks, 30);
   assert.equal(events[0].dailyWordQuota.limit, 3000);
   assert.equal(events[0].dailyWordQuota.used, 3000);
   assert.equal(events[0].dailyWordQuota.remaining, 0);
@@ -399,13 +399,13 @@ test('Pro plan accepts full 3000-word payload in a single request and enforces l
   assert.ok(!events.some(e => e.type === 'error'));
 
   const audioEvents = events.filter(e => e.type === 'audio');
-  assert.equal(audioEvents.length, 17);
+  assert.equal(audioEvents.length, 30);
   assert.ok(audioEvents.every(e => typeof e.data === 'string' && e.data.length > 0));
   const decodedAudioBytes = audioEvents.reduce((acc, ev) => acc + decodeBase64PCM(ev.data).byteLength, 0);
-  assert.equal(decodedAudioBytes, 17 * 2);
+  assert.equal(decodedAudioBytes, 30 * 2);
 
   assert.equal(synthesisCalls, 1);
-  assert.equal(totalChunksProcessed, 17);
+  assert.equal(totalChunksProcessed, 30);
 
   const quotaAfter = (await (await fetch(`${base}/api/config`, { headers: { Cookie: signedInCookie } })).json()).dailyWordQuota;
   assert.equal(quotaAfter.used, 3000);
@@ -497,7 +497,7 @@ test('Studio plan accepts full 5000-word peak capacity payload in a single reque
   const events = rawStream.trim().split('\n').map(line => JSON.parse(line));
   assert.equal(events[0].type, 'start');
   assert.equal(events[0].sampleRate, 24000);
-  assert.equal(events[0].totalChunks, 28);
+  assert.equal(events[0].totalChunks, 50);
   assert.equal(events[0].dailyWordQuota.limit, 5000);
   assert.equal(events[0].dailyWordQuota.used, 5000);
   assert.equal(events[0].dailyWordQuota.remaining, 0);
@@ -507,13 +507,13 @@ test('Studio plan accepts full 5000-word peak capacity payload in a single reque
   assert.ok(!events.some(e => e.type === 'error'));
 
   const audioEvents = events.filter(e => e.type === 'audio');
-  assert.equal(audioEvents.length, 28);
+  assert.equal(audioEvents.length, 50);
   assert.ok(audioEvents.every(e => typeof e.data === 'string' && e.data.length > 0));
   const decodedAudioBytes = audioEvents.reduce((acc, ev) => acc + decodeBase64PCM(ev.data).byteLength, 0);
-  assert.equal(decodedAudioBytes, 28 * 2);
+  assert.equal(decodedAudioBytes, 50 * 2);
 
   assert.equal(synthesisCalls, 1);
-  assert.equal(totalChunksProcessed, 28);
+  assert.equal(totalChunksProcessed, 50);
 
   const quotaAfter = (await (await fetch(`${base}/api/config`, { headers: { Cookie: signedInCookie } })).json()).dailyWordQuota;
   assert.equal(quotaAfter.used, 5000);

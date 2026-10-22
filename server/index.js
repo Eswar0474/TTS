@@ -172,39 +172,108 @@ Bracketed expression tags at the start of the script, such as [Enthusiast][Excit
 Keep all reasoning internal. Do not produce a text response or expose thoughts.
 Return audio of the narration only. If you cannot comply, do not substitute a conversational response.`;
 export const MAX_TURNS_PER_LIVE_SESSION = 4;
+// Keep individual provider turns short enough for expressive speech in
+// languages whose words carry more characters than English words.  The
+// character bound is measured in JavaScript UTF-16 code units, matching the
+// request character limits used elsewhere in the application.
+export const SPEECH_CHUNK_MAX_WORDS = 100;
+export const SPEECH_CHUNK_MAX_CHARACTERS = 750;
 
-export const splitIntoChunks = (input, maxWords = 180) => {
+export const LIVE_SETUP_TIMEOUT_MS = 20_000;
+export const LIVE_TURN_INITIAL_TIMEOUT_MS = 60_000;
+export const LIVE_TURN_INACTIVITY_TIMEOUT_MS = 30_000;
+export const LIVE_TURN_MAX_DURATION_MS = 180_000;
+
+const isSentenceTerminal = character => character === '…' || character === '।' || character === '॥' ||
+  /^\p{Sentence_Terminal}$/u.test(character);
+const isClosingPunctuation = character => /["'”’»›)\]}）］｝】〕〉》]$/u.test(character);
+const isSentenceBoundary = value => {
+  const characters = [...value];
+  let index = characters.length - 1;
+  while (index >= 0 && isClosingPunctuation(characters[index])) index--;
+  return index >= 0 && isSentenceTerminal(characters[index]);
+};
+const isWhitespace = character => /^\s$/u.test(character);
+
+function codeUnitBoundary(input, start, desiredEnd) {
+  let end = Math.min(input.length, desiredEnd);
+  if (end > start && end < input.length &&
+      /[\uD800-\uDBFF]/.test(input[end - 1]) && /[\uDC00-\uDFFF]/.test(input[end])) {
+    end--;
+  }
+  // A caller may intentionally request a limit smaller than one code point.
+  // Preserve the code point rather than splitting a surrogate pair or looping.
+  if (end <= start && start < input.length) {
+    end = start + ([...input.slice(start, start + 2)][0]?.length || 1);
+  }
+  return Math.min(end, input.length);
+}
+
+export const splitIntoChunks = (
+  input,
+  maxWords = SPEECH_CHUNK_MAX_WORDS,
+  maxCharacters = SPEECH_CHUNK_MAX_CHARACTERS
+) => {
   if (typeof input !== 'string') throw new TypeError('Input must be a string.');
   if (!Number.isSafeInteger(maxWords) || maxWords < 1) throw new RangeError('maxWords must be a positive integer.');
+  if (!Number.isSafeInteger(maxCharacters) || maxCharacters < 1) throw new RangeError('maxCharacters must be a positive integer.');
   if (!input.length) return [];
-  const words = [...input.matchAll(/\S+/g)];
-  if (!words.length) return [input];
+  const words = [...input.matchAll(/\S+/gu)];
+  if (!words.length) {
+    const whitespaceChunks = [];
+    for (let start = 0; start < input.length;) {
+      const end = codeUnitBoundary(input, start, start + maxCharacters);
+      whitespaceChunks.push(input.slice(start, end));
+      start = end;
+    }
+    return whitespaceChunks;
+  }
   const chunks = [];
   let start = 0;
-  for (let first = 0; first < words.length;) {
-    let next = Math.min(first + maxWords, words.length);
-    if (next < words.length) {
-      // Prefer a sentence boundary, but never exceed the hard word bound.
-      for (let i = next - 1; i >= first; i--) {
-        if (/[.!?]["')\]}]*$/.test(words[i][0])) { next = i + 1; break; }
+  let first = 0;
+  while (start < input.length) {
+    while (first < words.length && words[first].index + words[first][0].length <= start) first++;
+
+    // Stop before the word that would exceed the word bound. A long unbroken
+    // token is handled by the character boundary below and may be split.
+    const wordLimit = first + maxWords < words.length ? words[first + maxWords].index : input.length;
+    const limit = codeUnitBoundary(input, start, Math.min(input.length, start + maxCharacters, wordLimit));
+    let end = 0;
+
+    if (limit === input.length) {
+      end = input.length;
+    } else {
+      // Prefer the latest complete sentence boundary within both limits. This
+      // recognizes ASCII and Unicode sentence punctuation, including Indic
+      // danda marks used by Hindi and Telugu scripts.
+      for (let index = first; index < words.length; index++) {
+        const word = words[index];
+        const wordEnd = word.index + word[0].length;
+        if (word.index >= limit || wordEnd > limit) break;
+        if (!isSentenceBoundary(word[0])) continue;
+        const followingWordStart = words[index + 1]?.index ?? input.length;
+        end = followingWordStart <= limit ? followingWordStart : wordEnd;
+      }
+
+      if (!end) {
+        // Otherwise prefer a whitespace boundary so normal words are not split.
+        // Include the whitespace run in the preceding chunk to preserve input
+        // byte-for-byte when chunks are joined again.
+        for (let index = limit - 1; index >= start; index--) {
+          if (!isWhitespace(input[index])) continue;
+          end = index + 1;
+          while (end < limit && isWhitespace(input[end])) end++;
+          break;
+        }
       }
     }
-    const end = next === words.length ? input.length : words[next].index;
+
+    if (end <= start) end = limit;
+    if (end <= start) end = codeUnitBoundary(input, start, start + 1);
     chunks.push(input.slice(start, end));
     start = end;
-    first = next;
   }
-  // Also bound characters: a single word can otherwise be arbitrarily large.
-  return chunks.flatMap(chunk => {
-    const bounded = [];
-    for (let i = 0; i < chunk.length;) {
-      let end = Math.min(i + 2000, chunk.length);
-      if (end < chunk.length && /[\uD800-\uDBFF]/.test(chunk[end - 1]) && /[\uDC00-\uDFFF]/.test(chunk[end])) end--;
-      bounded.push(chunk.slice(i, end));
-      i = end;
-    }
-    return bounded;
-  });
+  return chunks;
 };
 
 // Preserve the input boundaries while attaching whitespace-only fragments to a
@@ -876,10 +945,25 @@ export function wavHeader(dataLength) {
   const h = Buffer.alloc(44); h.write('RIFF',0); h.writeUInt32LE(36+dataLength,4); h.write('WAVE',8); h.write('fmt ',12); h.writeUInt32LE(16,16); h.writeUInt16LE(1,20); h.writeUInt16LE(1,22); h.writeUInt32LE(24000,24); h.writeUInt32LE(48000,28); h.writeUInt16LE(2,32); h.writeUInt16LE(16,34); h.write('data',36); h.writeUInt32LE(dataLength,40); return h;
 }
 
-export async function synthesizeWithLiveApi({ text, model = DEFAULT_MODEL_ID, voice, signal = new AbortController().signal, onAudio, onProgress, apiKey = process.env.GEMINI_API_KEY, client }) {
+export async function synthesizeWithLiveApi({
+  text,
+  model = DEFAULT_MODEL_ID,
+  voice,
+  signal = new AbortController().signal,
+  onAudio,
+  onProgress,
+  apiKey = process.env.GEMINI_API_KEY,
+  client,
+  timeouts = {}
+}) {
   const selected = MODELS.find(entry => entry.id === model);
   if (!selected || selected.transport !== 'live' || typeof text !== 'string' || !text.trim() || text.length > selected.characterLimit || !VOICES.includes(voice)) throw new Error('Invalid Live request.');
   const ai = client ?? new GoogleGenAI({ apiKey });
+  const timeoutValue = (value, fallback) => Number.isSafeInteger(value) && value > 0 ? value : fallback;
+  const setupTimeoutMs = timeoutValue(timeouts.setupTimeoutMs, LIVE_SETUP_TIMEOUT_MS);
+  const turnInitialTimeoutMs = timeoutValue(timeouts.turnInitialTimeoutMs, LIVE_TURN_INITIAL_TIMEOUT_MS);
+  const turnInactivityTimeoutMs = timeoutValue(timeouts.turnInactivityTimeoutMs, LIVE_TURN_INACTIVITY_TIMEOUT_MS);
+  const turnMaxDurationMs = timeoutValue(timeouts.turnMaxDurationMs, LIVE_TURN_MAX_DURATION_MS);
   const audio = [];
   const chunks = getSpeechChunks(text);
   let audioBytes = 0, completedChunks = 0;
@@ -892,31 +976,100 @@ export async function synthesizeWithLiveApi({ text, model = DEFAULT_MODEL_ID, vo
     let rejectFailure;
     const failure = new Promise((_, reject) => { rejectFailure = reject; });
     failure.catch(() => {});
+    const timeoutError = (message, code) => {
+      const error = new Error(message);
+      error.code = code;
+      return error;
+    };
+    const clearWaiterTimers = waiter => {
+      if (!waiter) return;
+      if (waiter.timer !== undefined) {
+        clearTimeout(waiter.timer);
+        waiter.timer = undefined;
+      }
+      if (waiter.inactivityTimer !== undefined) {
+        clearTimeout(waiter.inactivityTimer);
+        waiter.inactivityTimer = undefined;
+      }
+      if (waiter.maxTimer !== undefined) {
+        clearTimeout(waiter.maxTimer);
+        waiter.maxTimer = undefined;
+      }
+    };
     const fail = (error) => {
       if (finished || fatal) return;
       fatal = error;
       rejectFailure(error);
-      if (pending) { clearTimeout(pending.timer); pending.reject(error); pending = undefined; }
+      if (pending) {
+        const waiter = pending;
+        pending = undefined;
+        clearWaiterTimers(waiter);
+        waiter.reject(error);
+      }
       connectionController.abort();
     };
     const abort = () => fail(new Error('Client disconnected.'));
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort();
-    const waitFor = (kind, timeout) => new Promise((resolve, reject) => {
+    const waitFor = (kind, timeout, timeoutCode) => new Promise((resolve, reject) => {
       if (fatal) { reject(fatal); return; }
-      pending = { kind, resolve, reject, timer: setTimeout(() => fail(new Error(`Live ${kind} timed out.`)), timeout) };
+      const waiter = {
+        kind,
+        resolve,
+        reject,
+        timer: setTimeout(() => fail(timeoutError(`Live ${kind} timed out.`, timeoutCode)), timeout)
+      };
+      pending = waiter;
     });
+    const resetTurnInactivity = () => {
+      const waiter = pending;
+      if (fatal || finished || waiter?.kind !== 'turn' || waiter.turnCompleteSeen) return;
+      if (waiter.inactivityTimer !== undefined) clearTimeout(waiter.inactivityTimer);
+      waiter.inactivityTimer = setTimeout(
+        () => fail(timeoutError('Live turn produced no audio for too long.', 'LIVE_TURN_INACTIVITY_TIMEOUT')),
+        turnInactivityTimeoutMs
+      );
+    };
+    const waitForTurn = () => new Promise((resolve, reject) => {
+      if (fatal) { reject(fatal); return; }
+      const waiter = {
+        kind: 'turn',
+        resolve,
+        reject,
+        inactivityTimer: undefined,
+        maxTimer: setTimeout(
+          () => fail(timeoutError('Live turn exceeded its maximum duration.', 'LIVE_TURN_MAX_DURATION')),
+          turnMaxDurationMs
+        ),
+        turnCompleteSeen: false
+      };
+      pending = waiter;
+      waiter.inactivityTimer = setTimeout(
+        () => fail(timeoutError('Live turn did not begin producing audio.', 'LIVE_TURN_INACTIVITY_TIMEOUT')),
+        turnInitialTimeoutMs
+      );
+    });
+    const markTurnComplete = () => {
+      const waiter = pending;
+      if (waiter?.kind !== 'turn') return;
+      waiter.turnCompleteSeen = true;
+      if (waiter.inactivityTimer !== undefined) {
+        clearTimeout(waiter.inactivityTimer);
+        waiter.inactivityTimer = undefined;
+      }
+    };
     const complete = (kind) => {
       if (pending?.kind !== kind) return;
       const waiter = pending;
+      if (kind === 'turn' && !waiter.turnCompleteSeen) return;
       pending = undefined;
-      clearTimeout(waiter.timer);
+      clearWaiterTimers(waiter);
       waiter.resolve();
     };
 
     try {
       if (fatal) throw fatal;
-      const setup = waitFor('setup', 20_000);
+      const setup = waitFor('setup', setupTimeoutMs, 'LIVE_SETUP_TIMEOUT');
       setup.catch(() => {});
       const connection = ai.live.connect({
         model,
@@ -949,13 +1102,18 @@ export async function synthesizeWithLiveApi({ text, model = DEFAULT_MODEL_ID, vo
                 const bytes = decodeBase64PCM(data, MAX_AUDIO_BYTES - audioBytes);
                 audioBytes += bytes.length;
                 if (audioBytes > MAX_AUDIO_BYTES) throw new Error('Live audio exceeds the buffering limit.');
+                resetTurnInactivity();
                 if (onAudio) {
-                  callbackWork = callbackWork.then(() => onAudio(bytes));
+                  callbackWork = callbackWork.then(() => {
+                    if (fatal || finished) return;
+                    return onAudio(bytes);
+                  });
                   callbackWork.catch(fail);
                 } else audio.push(bytes);
               }
               if (content.turnComplete && pending?.kind === 'turn') {
                 if (audioBytes === turnStartBytes || (audioBytes - turnStartBytes) % 2) throw new Error('Live turn did not produce complete PCM audio.');
+                markTurnComplete();
                 callbackWork.then(() => complete('turn')).catch(fail);
               }
             } catch (error) { fail(error); }
@@ -979,7 +1137,7 @@ export async function synthesizeWithLiveApi({ text, model = DEFAULT_MODEL_ID, vo
       for (const chunk of sessionChunks) {
         if (fatal || signal.aborted) throw fatal || new Error('Client disconnected.');
         turnStartBytes = audioBytes;
-        const turn = waitFor('turn', 90_000);
+        const turn = waitForTurn();
         turn.catch(() => {});
         // Text narration is a completed content turn, not realtime user activity.
         // Realtime input is intended for microphone/media streams and can make a
@@ -987,19 +1145,26 @@ export async function synthesizeWithLiveApi({ text, model = DEFAULT_MODEL_ID, vo
         if (typeof session.sendClientContent !== 'function') {
           throw new Error('Live session does not support deterministic text-to-speech turns.');
         }
-        await session.sendClientContent({
+        const send = Promise.resolve().then(() => session.sendClientContent({
           turns: [{ role: 'user', parts: [{ text: chunk }] }],
           turnComplete: true
-        });
+        }));
+        send.catch(fail);
+        await Promise.race([send, failure]);
         await Promise.race([turn, failure]);
         completedChunks++;
-        if (onProgress) await onProgress({ completedChunks, totalChunks: chunks.length });
+        if (onProgress) await Promise.race([Promise.resolve(onProgress({ completedChunks, totalChunks: chunks.length })), failure]);
       }
       if (fatal) throw fatal;
     } finally {
       finished = true;
       signal.removeEventListener('abort', abort);
-      if (pending) { clearTimeout(pending.timer); pending.reject(new Error('Live session ended.')); pending = undefined; }
+      if (pending) {
+        const waiter = pending;
+        pending = undefined;
+        clearWaiterTimers(waiter);
+        waiter.reject(new Error('Live session ended.'));
+      }
       try {
         session?.close();
       } finally {

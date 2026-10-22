@@ -60,35 +60,42 @@ export function createAudioStore(sessionId) {
   let usingMemory = false;
   let chunkIndex = 0;
   let totalBytes = 0;
+  let pendingWrite = Promise.resolve();
 
   /**
    * Append a raw PCM Uint8Array chunk, persisting it to IndexedDB.
    * Falls back to memory on any IDB error.
    */
-  async function appendChunk(pcm) {
+  function appendChunk(pcm) {
     totalBytes += pcm.byteLength;
     const index = chunkIndex++;
 
-    if (usingMemory) {
-      memChunks.push(pcm);
-      memBytes += pcm.byteLength;
-      return;
-    }
+    // The NDJSON parser receives events synchronously, while IndexedDB writes
+    // are asynchronous. Queue writes here so buildWav/streamChunks can wait
+    // for every chunk even when callers intentionally fire-and-forget.
+    pendingWrite = pendingWrite.then(async () => {
+      if (usingMemory) {
+        memChunks.push(pcm);
+        memBytes += pcm.byteLength;
+        return;
+      }
 
-    try {
-      const db = await openDB();
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      await idbRequest(tx.objectStore(STORE_NAME).put({
-        sessionId,
-        chunkIndex: index,
-        pcm: pcm.slice() // detach from any shared buffer
-      }));
-    } catch {
-      // IDB unavailable — switch to memory for remaining chunks
-      usingMemory = true;
-      memChunks.push(pcm);
-      memBytes += pcm.byteLength;
-    }
+      try {
+        const db = await openDB();
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        await idbRequest(tx.objectStore(STORE_NAME).put({
+          sessionId,
+          chunkIndex: index,
+          pcm: pcm.slice() // detach from any shared buffer
+        }));
+      } catch {
+        // IDB unavailable — switch to memory for remaining chunks
+        usingMemory = true;
+        memChunks.push(pcm);
+        memBytes += pcm.byteLength;
+      }
+    });
+    return pendingWrite;
   }
 
   /**
@@ -97,6 +104,7 @@ export function createAudioStore(sessionId) {
    */
   async function buildWav(sampleRate = 24000) {
     if (!totalBytes) throw new Error('The stream returned no audio.');
+    await pendingWrite;
     const WAV_HEADER_BYTES = 44;
 
     if (usingMemory) {
@@ -136,6 +144,7 @@ export function createAudioStore(sessionId) {
    * @param {(chunk: Uint8Array) => void} onChunk
    */
   async function streamChunks(onChunk) {
+    await pendingWrite;
     if (usingMemory) {
       for (const chunk of memChunks) onChunk(chunk);
       return;
@@ -166,6 +175,7 @@ export function createAudioStore(sessionId) {
    * Call after the WAV has been assembled / export is complete.
    */
   async function clear() {
+    try { await pendingWrite; } catch { /* best-effort */ }
     memChunks = [];
     memBytes = 0;
     if (usingMemory) return;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MODELS, DEFAULT_ENGINE, DEFAULT_MODEL_ID, ENHANCED_MODEL_ID, MAX_TURNS_PER_LIVE_SESSION, createApp, synthesizeWithLiveApi, SYSTEM_INSTRUCTION } from '../server/index.js';
+import { MODELS, DEFAULT_ENGINE, DEFAULT_MODEL_ID, ENHANCED_MODEL_ID, MAX_TURNS_PER_LIVE_SESSION, SPEECH_CHUNK_MAX_WORDS, createApp, synthesizeWithLiveApi, SYSTEM_INSTRUCTION } from '../server/index.js';
 import { createMemoryDailyWordQuota } from '../server/quota.js';
 import { getModelPresentation, VOICE_LABELS } from '../src/presentation.js';
 
@@ -220,7 +220,7 @@ test('long Live requests reconnect between bounded groups of turns', async () =>
       close: () => { closed++; }
     };
   } } };
-  const text = Array.from({ length: MAX_TURNS_PER_LIVE_SESSION * 180 + 1 }, () => 'word').join(' ');
+  const text = Array.from({ length: MAX_TURNS_PER_LIVE_SESSION * SPEECH_CHUNK_MAX_WORDS + 1 }, () => 'word').join(' ');
   await synthesizeWithLiveApi({
     text, model: DEFAULT_MODEL_ID, voice: 'Kore', client,
     onAudio: () => {},
@@ -229,6 +229,87 @@ test('long Live requests reconnect between bounded groups of turns', async () =>
   assert.deepEqual(sentBySession.map(chunks => chunks.length), [MAX_TURNS_PER_LIVE_SESSION, 1]);
   assert.deepEqual(progress, [1, 2, 3, 4, 5]);
   assert.equal(closed, 2);
+});
+
+test('Live turn watchdog slides while valid audio frames keep arriving', async () => {
+  let callbacks;
+  let closed = false;
+  const audioMessage = {
+    serverContent: {
+      modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: 'AAA=' } }] }
+    }
+  };
+  const client = { live: { connect: async options => {
+    callbacks = options.callbacks;
+    callbacks.onmessage({ setupComplete: true });
+    return {
+      sendClientContent: async () => {
+        setTimeout(() => callbacks.onmessage(audioMessage), 5);
+        setTimeout(() => callbacks.onmessage(audioMessage), 15);
+        setTimeout(() => callbacks.onmessage({
+          serverContent: { modelTurn: { parts: [] }, turnComplete: true }
+        }), 20);
+      },
+      close: () => { closed = true; }
+    };
+  } } };
+
+  await synthesizeWithLiveApi({
+    text: 'Hello world', model: DEFAULT_MODEL_ID, voice: 'Kore', client,
+    timeouts: { setupTimeoutMs: 50, turnInitialTimeoutMs: 20, turnInactivityTimeoutMs: 12, turnMaxDurationMs: 100 },
+    onAudio: () => {}
+  });
+  assert.equal(closed, true);
+});
+
+test('Live turn watchdog rejects an initially silent provider turn', async () => {
+  let closed = false;
+  const client = { live: { connect: async options => {
+    options.callbacks.onmessage({ setupComplete: true });
+    return {
+      sendClientContent: () => new Promise(() => {}),
+      close: () => { closed = true; }
+    };
+  } } };
+
+  await assert.rejects(
+    synthesizeWithLiveApi({
+      text: 'Hello world', model: DEFAULT_MODEL_ID, voice: 'Kore', client,
+      timeouts: { setupTimeoutMs: 50, turnInitialTimeoutMs: 12, turnInactivityTimeoutMs: 12, turnMaxDurationMs: 100 }
+    }),
+    error => error?.code === 'LIVE_TURN_INACTIVITY_TIMEOUT'
+  );
+  assert.equal(closed, true);
+});
+
+test('Live turn watchdog keeps an absolute maximum for an endlessly active turn', async () => {
+  let callbacks;
+  let closed = false;
+  const client = { live: { connect: async options => {
+    callbacks = options.callbacks;
+    callbacks.onmessage({ setupComplete: true });
+    return {
+      sendClientContent: () => {
+        for (const delay of [5, 10, 15, 20]) setTimeout(() => callbacks.onmessage({
+          serverContent: {
+            modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: 'AAA=' } }] }
+          }
+        }), delay);
+        return new Promise(() => {});
+      },
+      close: () => { closed = true; }
+    };
+  } } };
+
+  await assert.rejects(
+    synthesizeWithLiveApi({
+      text: 'Hello world', model: DEFAULT_MODEL_ID, voice: 'Kore', client,
+      timeouts: { setupTimeoutMs: 50, turnInitialTimeoutMs: 20, turnInactivityTimeoutMs: 10, turnMaxDurationMs: 25 },
+      onAudio: () => {}
+    }),
+    error => error?.code === 'LIVE_TURN_MAX_DURATION'
+  );
+  assert.equal(closed, true);
 });
 
 test('Live config keeps the immutable instruction and AUDIO modality', async () => {
