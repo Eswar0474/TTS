@@ -10,7 +10,7 @@ import { AUDIO_FORMATS, isFormatAllowed, FORMAT_MIN_PLAN } from './audio-formats
 import { formatResetCountdown } from './quota-display.js';
 
 const SAMPLE = 'The future is not a destination. It is a rhythm we learn to move with.';
-const ALLOWED_QUOTA_LIMITS = [50, 1000, 2000, 3000, 1000000];
+const ALLOWED_QUOTA_LIMITS = [50, 1000, 2000, 3000, 5000, 1000000];
 const canShareFile = (file) => {
   if (!file || typeof navigator.share !== 'function' || typeof navigator.canShare !== 'function') return false;
   try { return navigator.canShare({ files: [file] }); }
@@ -20,7 +20,7 @@ const validDailyWordQuota = (quota) => quota && ALLOWED_QUOTA_LIMITS.includes(qu
   Number.isSafeInteger(quota.used) && quota.used >= 0 && quota.used <= quota.limit &&
   quota.remaining === quota.limit - quota.used &&
   (quota.unlimited === undefined || typeof quota.unlimited === 'boolean') &&
-  (quota.unlimited !== true || [1000, 1000000].includes(quota.limit)) &&
+  (quota.unlimited !== true || [1000, 2000, 3000, 5000, 1000000].includes(quota.limit)) &&
   typeof quota.resetsAt === 'string' && Number.isFinite(Date.parse(quota.resetsAt));
 
 function validateConfig(data) {
@@ -28,8 +28,8 @@ function validateConfig(data) {
   const positiveLimit = (value) => Number.isSafeInteger(value) && value > 0;
   const userPlan = (data?.user?.plan || 'free').toLowerCase();
   const isStudio = userPlan === 'studio';
-  const expectedLimit = isStudio ? 1000000 : userPlan === 'pro' ? 3000 : userPlan === 'plus' ? 2000 : data?.auth?.signedIn ? 1000 : 50;
-  const expectedUnlimited = Boolean(data?.auth?.admin || isStudio);
+  const expectedLimit = isStudio ? 5000 : userPlan === 'pro' ? 3000 : userPlan === 'plus' ? 2000 : data?.auth?.signedIn ? 1000 : 50;
+  const expectedUnlimited = Boolean(data?.auth?.admin);
   if (!data || typeof data.configured !== 'boolean' || !positiveLimit(data.characterLimit) || data.streaming !== true ||
     !validDailyWordQuota(data.dailyWordQuota) ||
     !data.auth || typeof data.auth.enabled !== 'boolean' || typeof data.auth.signedIn !== 'boolean' ||
@@ -430,7 +430,7 @@ function App() {
            <p className="expression-hint">Add tags separated by commas.</p>
            <div className={`textarea-wrap ${signedInQuotaExhausted ? 'quota-locked' : ''}`}><textarea aria-label="Script" aria-disabled={signedInQuotaExhausted} disabled={busy || signedInQuotaExhausted} onChange={(e) => { setText(e.target.value); setChargedDraftWords(0); }} value={text} placeholder="Write or paste your script…" />{signedInQuotaExhausted && <div className="quota-lock-message" role="status"><strong>Daily allowance used</strong><span>Next reset in</span><time>{resetCountdown}</time></div>}<div className="textarea-footer"><span className={overLimit ? 'counter over' : 'counter'}>{count.toLocaleString()} <span>/ {limit ? limit.toLocaleString() : '—'} characters</span></span><span className="word-counter" aria-label={`${wordCount.toLocaleString()} words in draft, including tags`}>{wordCount.toLocaleString()} words <span>incl. tags</span></span><span className="tag-hint">Tags included</span></div></div>
            <div className="quota-track"><div style={{ width: `${percent}%` }} /></div>
-           <p className={overDailyLimit ? 'daily-quota over' : 'daily-quota'}>{dailyWordQuota?.unlimited ? (isAdmin ? 'Admin access · daily word cap bypassed' : 'Studio plan · unlimited daily words') : dailyWordQuota ? `${projectedDailyWords.toLocaleString()} / ${dailyWordQuota.limit.toLocaleString()} words incl. draft · ${projectedWordsRemaining.toLocaleString()} left · resets 00:00 UTC` : 'Loading daily allowance…'}</p>
+           <p className={overDailyLimit ? 'daily-quota over' : 'daily-quota'}>{dailyWordQuota?.unlimited ? (isAdmin ? 'Admin access · daily word cap bypassed' : 'Daily word cap bypassed') : dailyWordQuota ? `${projectedDailyWords.toLocaleString()} / ${dailyWordQuota.limit.toLocaleString()} words incl. draft · ${projectedWordsRemaining.toLocaleString()} left · resets 00:00 UTC` : 'Loading daily allowance…'}</p>
            <p className="quota-disclaimer">{dailyWordQuota?.unlimited ? 'Per-request and provider safety limits still apply.' : config?.auth.signedIn ? `${userPlan === 'studio' ? 'Studio plan' : userPlan === 'pro' ? 'Pro plan' : userPlan === 'plus' ? 'Plus plan' : 'Google account'} allowance · ${dailyWordQuota?.limit.toLocaleString()} words each UTC day.` : 'Guest allowance · 50 words each UTC day.'}</p>
            {overLimit && <p className="error-text">Character limit reached. Shorten your script.</p>}{overDailyLimit && <p className="error-text">Daily word limit reached. Shorten your script or wait for reset.</p>}
          </div>

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { createApp, DEFAULT_MODEL_ID } from '../server/index.js';
+import { createApp, DEFAULT_MODEL_ID, getSpeechChunks } from '../server/index.js';
 import { createMemoryDailyWordQuota } from '../server/quota.js';
 import { MAX_AUDIO_BYTES, MAX_STREAM_WIRE_BYTES, decodeBase64PCM, pcmToFloat32, encodeWav, createNDJSONParser } from '../src/audio.js';
 
@@ -313,4 +313,205 @@ test('missing configuration blocks requests without contacting provider', async 
   const base = await serve(t, () => { throw new Error('must not run'); }, { apiKey: '', model: DEFAULT_MODEL_ID });
   assert.equal((await post(base)).status, 503);
   assert.equal((await (await fetch(`${base}/api/config`)).json()).configured, false);
+});
+
+test('Pro plan accepts full 3000-word payload in a single request and enforces limit', async t => {
+  let authParameters;
+  let authNonce;
+  const oauthClient = {
+    generateAuthUrl(parameters) {
+      authParameters = parameters;
+      const url = new URL('https://accounts.google.test/auth');
+      url.searchParams.set('state', parameters.state);
+      return url.toString();
+    },
+    async getToken() { return { tokens: { id_token: 'verified-pro-token' } }; },
+    async verifyIdToken() { return { getPayload: () => ({ sub: 'google-pro-user', nonce: authNonce }) }; }
+  };
+
+  let synthesisCalls = 0;
+  let totalChunksProcessed = 0;
+  const synthesize = async ({ text, onAudio, onProgress }) => {
+    synthesisCalls++;
+    const chunks = getSpeechChunks(text);
+    totalChunksProcessed = chunks.length;
+    for (let i = 0; i < chunks.length; i++) {
+      onAudio(Buffer.from([0, 0]));
+      onProgress({ completedChunks: i + 1, totalChunks: chunks.length });
+    }
+    return Buffer.alloc(0);
+  };
+
+  const base = await serve(t, synthesize, {
+    apiKey: 'test-only',
+    model: DEFAULT_MODEL_ID,
+    googleClientId: 'test-client-id',
+    googleClientSecret: 'test-client-secret',
+    googleRedirectUri: 'https://studio.example/auth/google/callback',
+    sessionSecret: 'test-session-secret',
+    oauthClient
+  });
+
+  const start = await fetch(`${base}/auth/google`, { redirect: 'manual' });
+  const initialCookie = start.headers.getSetCookie()[0].split(';')[0];
+  authNonce = new URL(start.headers.get('location')).searchParams.get('nonce');
+  const callback = await fetch(`${base}/auth/google/callback?code=authorization-code&state=${authParameters.state}`, {
+    headers: { Cookie: initialCookie },
+    redirect: 'manual'
+  });
+  const signedInCookie = callback.headers.getSetCookie()[0].split(';')[0];
+
+  const subRes = await fetch(`${base}/api/plans/subscribe-test`, {
+    method: 'POST',
+    headers: { Cookie: signedInCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ plan: 'pro', confirm: true })
+  });
+  assert.equal(subRes.status, 200);
+  const subData = await subRes.json();
+  assert.equal(subData.ok, true);
+  assert.equal(subData.plan, 'pro');
+
+  const config = await (await fetch(`${base}/api/config`, { headers: { Cookie: signedInCookie } })).json();
+  assert.equal(config.user.plan, 'pro');
+  assert.equal(config.dailyWordQuota.limit, 3000);
+  assert.equal(config.dailyWordQuota.used, 0);
+  assert.equal(config.dailyWordQuota.remaining, 3000);
+
+  const text3000 = Array(3000).fill('word').join(' ');
+  const res = await fetch(`${base}/api/generate/stream`, {
+    method: 'POST',
+    headers: { Cookie: signedInCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: text3000, model: DEFAULT_MODEL_ID, voice: 'Kore' })
+  });
+  assert.equal(res.status, 200);
+
+  const rawStream = await res.text();
+  const events = rawStream.trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(events[0].type, 'start');
+  assert.equal(events[0].sampleRate, 24000);
+  assert.equal(events[0].totalChunks, 17);
+  assert.equal(events[0].dailyWordQuota.limit, 3000);
+  assert.equal(events[0].dailyWordQuota.used, 3000);
+  assert.equal(events[0].dailyWordQuota.remaining, 0);
+
+  const doneEvent = events[events.length - 1];
+  assert.equal(doneEvent.type, 'done');
+  assert.ok(!events.some(e => e.type === 'error'));
+  assert.equal(synthesisCalls, 1);
+  assert.equal(totalChunksProcessed, 17);
+
+  const quotaAfter = (await (await fetch(`${base}/api/config`, { headers: { Cookie: signedInCookie } })).json()).dailyWordQuota;
+  assert.equal(quotaAfter.used, 3000);
+  assert.equal(quotaAfter.remaining, 0);
+
+  const nextRes = await fetch(`${base}/api/generate/stream`, {
+    method: 'POST',
+    headers: { Cookie: signedInCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'one more word', model: DEFAULT_MODEL_ID, voice: 'Kore' })
+  });
+  assert.equal(nextRes.status, 429);
+  const rejection = await nextRes.json();
+  assert.match(rejection.error, /Daily limit reached/);
+  assert.equal(rejection.dailyWordQuota.remaining, 0);
+});
+
+test('Studio plan accepts full 5000-word peak capacity payload in a single request and enforces limit', async t => {
+  let authParameters;
+  let authNonce;
+  const oauthClient = {
+    generateAuthUrl(parameters) {
+      authParameters = parameters;
+      const url = new URL('https://accounts.google.test/auth');
+      url.searchParams.set('state', parameters.state);
+      return url.toString();
+    },
+    async getToken() { return { tokens: { id_token: 'verified-studio-token' } }; },
+    async verifyIdToken() { return { getPayload: () => ({ sub: 'google-studio-user', nonce: authNonce }) }; }
+  };
+
+  let synthesisCalls = 0;
+  let totalChunksProcessed = 0;
+  const synthesize = async ({ text, onAudio, onProgress }) => {
+    synthesisCalls++;
+    const chunks = getSpeechChunks(text);
+    totalChunksProcessed = chunks.length;
+    for (let i = 0; i < chunks.length; i++) {
+      onAudio(Buffer.from([0, 0]));
+      onProgress({ completedChunks: i + 1, totalChunks: chunks.length });
+    }
+    return Buffer.alloc(0);
+  };
+
+  const base = await serve(t, synthesize, {
+    apiKey: 'test-only',
+    model: DEFAULT_MODEL_ID,
+    googleClientId: 'test-client-id',
+    googleClientSecret: 'test-client-secret',
+    googleRedirectUri: 'https://studio.example/auth/google/callback',
+    sessionSecret: 'test-session-secret',
+    oauthClient
+  });
+
+  const start = await fetch(`${base}/auth/google`, { redirect: 'manual' });
+  const initialCookie = start.headers.getSetCookie()[0].split(';')[0];
+  authNonce = new URL(start.headers.get('location')).searchParams.get('nonce');
+  const callback = await fetch(`${base}/auth/google/callback?code=authorization-code&state=${authParameters.state}`, {
+    headers: { Cookie: initialCookie },
+    redirect: 'manual'
+  });
+  const signedInCookie = callback.headers.getSetCookie()[0].split(';')[0];
+
+  const subRes = await fetch(`${base}/api/plans/subscribe-test`, {
+    method: 'POST',
+    headers: { Cookie: signedInCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ plan: 'studio', confirm: true })
+  });
+  assert.equal(subRes.status, 200);
+  const subData = await subRes.json();
+  assert.equal(subData.ok, true);
+  assert.equal(subData.plan, 'studio');
+
+  const config = await (await fetch(`${base}/api/config`, { headers: { Cookie: signedInCookie } })).json();
+  assert.equal(config.user.plan, 'studio');
+  assert.equal(config.dailyWordQuota.limit, 5000);
+  assert.equal(config.dailyWordQuota.unlimited, undefined);
+  assert.equal(config.dailyWordQuota.used, 0);
+  assert.equal(config.dailyWordQuota.remaining, 5000);
+
+  const text5000 = Array(5000).fill('word').join(' ');
+  const res = await fetch(`${base}/api/generate/stream`, {
+    method: 'POST',
+    headers: { Cookie: signedInCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: text5000, model: DEFAULT_MODEL_ID, voice: 'Kore' })
+  });
+  assert.equal(res.status, 200);
+
+  const rawStream = await res.text();
+  const events = rawStream.trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(events[0].type, 'start');
+  assert.equal(events[0].sampleRate, 24000);
+  assert.equal(events[0].totalChunks, 28);
+  assert.equal(events[0].dailyWordQuota.limit, 5000);
+  assert.equal(events[0].dailyWordQuota.used, 5000);
+  assert.equal(events[0].dailyWordQuota.remaining, 0);
+
+  const doneEvent = events[events.length - 1];
+  assert.equal(doneEvent.type, 'done');
+  assert.ok(!events.some(e => e.type === 'error'));
+  assert.equal(synthesisCalls, 1);
+  assert.equal(totalChunksProcessed, 28);
+
+  const quotaAfter = (await (await fetch(`${base}/api/config`, { headers: { Cookie: signedInCookie } })).json()).dailyWordQuota;
+  assert.equal(quotaAfter.used, 5000);
+  assert.equal(quotaAfter.remaining, 0);
+
+  const nextRes = await fetch(`${base}/api/generate/stream`, {
+    method: 'POST',
+    headers: { Cookie: signedInCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'one more word', model: DEFAULT_MODEL_ID, voice: 'Kore' })
+  });
+  assert.equal(nextRes.status, 429);
+  const rejection = await nextRes.json();
+  assert.match(rejection.error, /Daily limit reached/);
+  assert.equal(rejection.dailyWordQuota.remaining, 0);
 });

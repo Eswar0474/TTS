@@ -11,7 +11,7 @@ export const PLAN_WORD_LIMITS = Object.freeze({
   free: DAILY_WORD_LIMIT,
   plus: 2_000,
   pro: 3_000,
-  studio: 1_000_000
+  studio: 5_000
 });
 
 const limitForSubject = (subjectType, customLimit) => {

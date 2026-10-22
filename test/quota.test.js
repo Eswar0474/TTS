@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPostgresDailyWordQuota } from '../server/quota.js';
+import { createPostgresDailyWordQuota, PLAN_WORD_LIMITS } from '../server/quota.js';
 
 function createFakePostgresPool() {
   const usage = new Map();
@@ -141,4 +141,19 @@ test('plan word limits apply custom quotas for plus, pro, and studio', async () 
   assert.equal(proConsume.allowed, true);
   assert.equal(proConsume.dailyWordQuota.used, 2500);
   assert.equal(proConsume.dailyWordQuota.remaining, 500);
+
+  const studioUsage = await quota.getUsageFor('user', 'user_studio', 5000);
+  assert.equal(studioUsage.limit, 5000);
+  assert.equal(studioUsage.remaining, 5000);
+
+  const studioConsume = await quota.consumeFor('user', 'user_studio', 4500, 5000);
+  assert.equal(studioConsume.allowed, true);
+  assert.equal(studioConsume.dailyWordQuota.used, 4500);
+  assert.equal(studioConsume.dailyWordQuota.remaining, 500);
+
+  assert.equal(PLAN_WORD_LIMITS.guest, 50);
+  assert.equal(PLAN_WORD_LIMITS.free, 1000);
+  assert.equal(PLAN_WORD_LIMITS.plus, 2000);
+  assert.equal(PLAN_WORD_LIMITS.pro, 3000);
+  assert.equal(PLAN_WORD_LIMITS.studio, 5000);
 });

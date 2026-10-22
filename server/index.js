@@ -437,9 +437,8 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
   const getPlanInfo = req => {
     const signedIn = Boolean(req.session?.userId);
     const plan = signedIn ? (req.session?.userPlan || 'free').toLowerCase() : 'guest';
-    const isStudio = plan === 'studio';
-    const isUnlimited = Boolean(isAdmin(req) || isStudio);
-    const limit = isStudio ? 1_000_000 : plan === 'pro' ? 3_000 : plan === 'plus' ? 2_000 : signedIn ? 1_000 : 50;
+    const isUnlimited = Boolean(isAdmin(req));
+    const limit = plan === 'studio' ? 5_000 : plan === 'pro' ? 3_000 : plan === 'plus' ? 2_000 : signedIn ? 1_000 : 50;
     return { plan, signedIn, isUnlimited, limit };
   };
   const readDailyQuota = req => {
@@ -667,7 +666,6 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
   });
   app.get('/api/config', async (req, res) => {
     try {
-      const dailyQuota = await readDailyQuota(req);
       const signedIn = Boolean(req.session?.userId);
       if (signedIn && pool) {
         try {
@@ -708,6 +706,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
           logSafeError(logger, '[sonora] Could not query user record', dbError);
         }
       }
+      const dailyQuota = await readDailyQuota(req);
       return res.json({
         configured: Boolean(apiKey),
         modelId: defaultModel?.id ?? null, defaultModelId: defaultModel?.id ?? null,
