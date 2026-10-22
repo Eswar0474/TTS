@@ -31,6 +31,13 @@ async function getFFmpeg() {
   }
 }
 
+/**
+ * Transcode audio to the requested format.
+ *
+ * @param {Uint8Array} wavBytes  Complete WAV file bytes (from wavBytesRef).
+ * @param {string}     format    One of the keys in AUDIO_FORMATS.
+ * @returns {Promise<Uint8Array>}
+ */
 export async function transcodeAudio(wavBytes, format) {
   if (!(wavBytes instanceof Uint8Array) || !wavBytes.byteLength) throw new TypeError('A non-empty WAV file is required.');
   if (!Object.hasOwn(AUDIO_FORMATS, format)) throw new RangeError(`Unsupported audio format: ${format}`);

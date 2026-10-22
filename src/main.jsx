@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { SAMPLE_RATE, MAX_AUDIO_BYTES, MAX_STREAM_WIRE_BYTES, decodeBase64PCM, encodeWav, createNDJSONParser } from './audio.js';
+import { SAMPLE_RATE, MAX_STREAM_WIRE_BYTES, decodeBase64PCM, createNDJSONParser } from './audio.js';
 import './styles.css';
 import './stream.css';
 import { getAvailability } from './availability.js';
@@ -8,6 +8,7 @@ import { buildModulatedText } from './expression.js';
 import { getModelPresentation, VOICE_LABELS } from './presentation.js';
 import { AUDIO_FORMATS, isFormatAllowed, FORMAT_MIN_PLAN } from './audio-formats.js';
 import { formatResetCountdown } from './quota-display.js';
+import { createAudioStore, nextSessionId } from './audio-store.js';
 
 const SAMPLE = 'The future is not a destination. It is a rhythm we learn to move with.';
 const ALLOWED_QUOTA_LIMITS = [50, 1000, 2000, 3000, 5000, 1000000];
@@ -347,6 +348,8 @@ function App() {
     requestRef.current = controller;
     setStatus('generating'); setProgress({ completed: 0, total: 0 });
     let reader;
+    // Create a fresh IndexedDB-backed store for this generation session.
+    const audioStore = createAudioStore(nextSessionId());
     const current = () => mountedRef.current && requestRef.current === controller && !controller.signal.aborted;
     try {
       const response = await fetch('/api/generate/stream', {
@@ -363,8 +366,7 @@ function App() {
       if (!response.body) throw new Error('Streaming responses are not supported in this browser.');
       reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8', { fatal: true });
-      const chunks = [];
-      let bytes = 0, wireBytes = 0, started = false, done = false, total = 0, completed = 0;
+      let wireBytes = 0, started = false, done = false, total = 0, completed = 0;
       const parser = createNDJSONParser((event) => {
         if (!current()) return;
         if (done) throw new Error('Received an event after stream completion.');
@@ -378,14 +380,13 @@ function App() {
         if (!started) throw new Error('Audio stream did not begin with a start event.');
         if (event.type === 'audio') {
           const pcm = decodeBase64PCM(event.data);
-          bytes += pcm.byteLength;
-          if (bytes > MAX_AUDIO_BYTES) throw new Error('Audio exceeds the 128 MiB safety limit.');
-          chunks.push(pcm);
+          // Store chunk in IndexedDB — no 128 MiB in-memory cap.
+          audioStore.appendChunk(pcm);
         } else if (event.type === 'progress') {
           if (event.totalChunks !== total || !Number.isInteger(event.completedChunks) || event.completedChunks < completed || event.completedChunks > total) throw new Error('Invalid stream progress.');
           completed = event.completedChunks; setProgress({ completed, total });
         } else if (event.type === 'done') {
-          if (completed !== total || !bytes) throw new Error('The audio stream is incomplete.');
+          if (completed !== total || !audioStore.totalBytes) throw new Error('The audio stream is incomplete.');
           done = true;
         }
         else throw new Error('Unknown stream event.');
@@ -400,15 +401,18 @@ function App() {
       }
       parser.push(decoder.decode()); parser.finish();
       if (!done) throw new Error('The audio stream ended before completion. Please retry.');
-      const wav = encodeWav(chunks);
+      // Build WAV from IndexedDB — streamed into a single Uint8Array.
+      const wav = await audioStore.buildWav(SAMPLE_RATE);
       if (!current()) return;
       wavBytesRef.current = wav;
       audioUrlRef.current = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }));
       setAudioUrl(audioUrlRef.current); setStatus('complete'); setProgress({ completed: total, total });
-      chunks.length = 0;
+      // Release IDB storage for this session after the Blob URL is created.
+      audioStore.clear();
     } catch (err) {
       if (!current()) return;
       controller.abort(); clearFile(); setError(err.message); setStatus('error');
+      audioStore.clear();
     } finally {
       if (reader) { try { await reader.cancel(); } catch {} }
       if (requestRef.current === controller) requestRef.current = null;
