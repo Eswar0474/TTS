@@ -291,6 +291,8 @@ test('failed or incomplete synthesis never emits done or leaks errors', async t 
     throw new Error(`provider refused ${text} with key test-only`);
   }, undefined, { error: (...args) => logged.push(args) });
   const response = await post(base);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type') || '', /application\/x-ndjson/);
   const text = await response.text();
   const events = text.trim().split('\n').map(JSON.parse);
   assert.deepEqual(events.map(event => event.type), ['start', 'audio', 'error']);

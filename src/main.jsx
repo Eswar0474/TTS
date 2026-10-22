@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { SAMPLE_RATE, MAX_STREAM_WIRE_BYTES, decodeBase64PCM, createNDJSONParser } from './audio.js';
+import { SAMPLE_RATE, decodeBase64PCM } from './audio.js';
 import './styles.css';
 import './stream.css';
 import { getAvailability } from './availability.js';
@@ -9,6 +9,7 @@ import { getModelPresentation, VOICE_LABELS } from './presentation.js';
 import { AUDIO_FORMATS, isFormatAllowed, FORMAT_MIN_PLAN } from './audio-formats.js';
 import { formatResetCountdown } from './quota-display.js';
 import { createAudioStore, nextSessionId } from './audio-store.js';
+import { readNDJSONStream } from './stream-client.js';
 
 const SAMPLE = 'The future is not a destination. It is a rhythm we learn to move with.';
 const ALLOWED_QUOTA_LIMITS = [50, 1000, 2000, 3000, 5000, 1000000];
@@ -351,6 +352,7 @@ function App() {
     // Create a fresh IndexedDB-backed store for this generation session.
     const audioStore = createAudioStore(nextSessionId());
     const current = () => mountedRef.current && requestRef.current === controller && !controller.signal.aborted;
+    let streamEnded = false;
     try {
       const response = await fetch('/api/generate/stream', {
         method: 'POST',
@@ -365,41 +367,35 @@ function App() {
       }
       if (!response.body) throw new Error('Streaming responses are not supported in this browser.');
       reader = response.body.getReader();
-      const decoder = new TextDecoder('utf-8', { fatal: true });
-      let wireBytes = 0, started = false, done = false, total = 0, completed = 0;
-      const parser = createNDJSONParser((event) => {
-        if (!current()) return;
-        if (done) throw new Error('Received an event after stream completion.');
-        if (event.type === 'error') throw new Error(typeof event.error === 'string' ? event.error : 'Generation failed.');
-        if (event.type === 'start') {
-          if (started || event.sampleRate !== SAMPLE_RATE || !Number.isInteger(event.totalChunks) || event.totalChunks <= 0 || !validDailyWordQuota(event.dailyWordQuota)) throw new Error('Invalid stream start.');
-          setDailyWordQuota(event.dailyWordQuota);
-          setChargedDraftWords(wordCount);
-          started = true; total = event.totalChunks; setProgress({ completed: 0, total }); return;
+      let started = false, done = false, total = 0, completed = 0;
+      const stream = await readNDJSONStream(reader, {
+        isActive: current,
+        onEvent: (event) => {
+          if (!current()) return;
+          if (done) throw new Error('Received an event after stream completion.');
+          if (event.type === 'start') {
+            if (started || event.sampleRate !== SAMPLE_RATE || !Number.isInteger(event.totalChunks) || event.totalChunks <= 0 || !validDailyWordQuota(event.dailyWordQuota)) throw new Error('Invalid stream start.');
+            setDailyWordQuota(event.dailyWordQuota);
+            setChargedDraftWords(wordCount);
+            started = true; total = event.totalChunks; setProgress({ completed: 0, total }); return;
+          }
+          if (!started) throw new Error('Audio stream did not begin with a start event.');
+          if (event.type === 'audio') {
+            const pcm = decodeBase64PCM(event.data);
+            // Store chunk in IndexedDB — no 128 MiB in-memory cap.
+            audioStore.appendChunk(pcm);
+          } else if (event.type === 'progress') {
+            if (event.totalChunks !== total || !Number.isInteger(event.completedChunks) || event.completedChunks < completed || event.completedChunks > total) throw new Error('Invalid stream progress.');
+            completed = event.completedChunks; setProgress({ completed, total });
+          } else if (event.type === 'done') {
+            if (completed !== total || !audioStore.totalBytes) throw new Error('The audio stream is incomplete.');
+            done = true;
+          }
+          else throw new Error('Unknown stream event.');
         }
-        if (!started) throw new Error('Audio stream did not begin with a start event.');
-        if (event.type === 'audio') {
-          const pcm = decodeBase64PCM(event.data);
-          // Store chunk in IndexedDB — no 128 MiB in-memory cap.
-          audioStore.appendChunk(pcm);
-        } else if (event.type === 'progress') {
-          if (event.totalChunks !== total || !Number.isInteger(event.completedChunks) || event.completedChunks < completed || event.completedChunks > total) throw new Error('Invalid stream progress.');
-          completed = event.completedChunks; setProgress({ completed, total });
-        } else if (event.type === 'done') {
-          if (completed !== total || !audioStore.totalBytes) throw new Error('The audio stream is incomplete.');
-          done = true;
-        }
-        else throw new Error('Unknown stream event.');
       });
-      while (true) {
-        const result = await reader.read();
-        if (!current()) return;
-        if (result.done) break;
-        wireBytes += result.value.byteLength;
-           if (wireBytes > MAX_STREAM_WIRE_BYTES) throw new Error('Stream exceeds the wire safety limit.');
-        parser.push(decoder.decode(result.value, { stream: true }));
-      }
-      parser.push(decoder.decode()); parser.finish();
+      streamEnded = stream.ended;
+      if (stream.error) throw stream.error;
       if (!done) throw new Error('The audio stream ended before completion. Please retry.');
       // Build WAV from IndexedDB — streamed into a single Uint8Array.
       const wav = await audioStore.buildWav(SAMPLE_RATE);
@@ -411,10 +407,11 @@ function App() {
       audioStore.clear();
     } catch (err) {
       if (!current()) return;
-      controller.abort(); clearFile(); setError(err.message); setStatus('error');
+      if (!streamEnded) controller.abort();
+      clearFile(); setError(err instanceof Error ? err.message : 'Generation failed.'); setStatus('error');
       audioStore.clear();
     } finally {
-      if (reader) { try { await reader.cancel(); } catch {} }
+      if (reader && !streamEnded) { try { await reader.cancel(); } catch {} }
       if (requestRef.current === controller) requestRef.current = null;
     }
   }
