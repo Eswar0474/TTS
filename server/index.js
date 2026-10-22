@@ -35,7 +35,9 @@ const CONTENT_SECURITY_POLICY = [
   "frame-ancestors 'none'",
   "form-action 'self'",
   "object-src 'none'",
-  "script-src 'self'",
+  // FFmpeg's browser encoder initializes WebAssembly inside its worker. The
+  // narrow wasm permission is required; do not broaden this to unsafe-eval.
+  "script-src 'self' 'wasm-unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
   "font-src 'self'",
   "img-src 'self' data: blob:",

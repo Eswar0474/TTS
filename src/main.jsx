@@ -10,6 +10,7 @@ import { AUDIO_FORMATS, isFormatAllowed, FORMAT_MIN_PLAN } from './audio-formats
 import { formatResetCountdown } from './quota-display.js';
 import { createAudioStore, nextSessionId } from './audio-store.js';
 import { readNDJSONStream } from './stream-client.js';
+import { errorMessage } from './export-errors.js';
 
 const SAMPLE = 'The future is not a destination. It is a rhythm we learn to move with.';
 const ALLOWED_QUOTA_LIMITS = [50, 1000, 2000, 3000, 5000, 1000000];
@@ -293,8 +294,16 @@ function App() {
     setDownloadError('');
     try {
       const formatKey = audioFormat;
-      const { transcodeAudio } = await import('./audio-export.js');
-      const bytes = await transcodeAudio(wavBytesRef.current, formatKey);
+      const sourceWav = wavBytesRef.current;
+      if (!(sourceWav instanceof Uint8Array) || !sourceWav.byteLength) {
+        throw new Error('The generated audio is no longer available. Generate it again.');
+      }
+      // WAV is already the generated output. Keep it independent of the
+      // optional FFmpeg/WebAssembly encoder so a CSP or encoder-load problem
+      // cannot block the lossless download path.
+      const bytes = formatKey === 'wav'
+        ? sourceWav
+        : await (await import('./audio-export.js')).transcodeAudio(sourceWav, formatKey);
       const format = AUDIO_FORMATS[formatKey];
       const filename = `sonora-speech.${format.extension}`;
       const blob = new Blob([bytes], { type: format.mimeType });
@@ -309,7 +318,7 @@ function App() {
       preparedExportRef.current = nextExport;
       setPreparedExport(nextExport);
     } catch (err) {
-      setDownloadError(err instanceof Error ? err.message : 'Audio download could not be prepared.');
+      setDownloadError(errorMessage(err));
     } finally {
       downloadLockRef.current = false;
       setDownloading(false);
@@ -328,7 +337,7 @@ function App() {
       await navigator.share({ files: [file], title: 'Sonora speech' });
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return;
-      setDownloadError(err instanceof Error ? err.message : 'The file could not be shared.');
+      setDownloadError(errorMessage(err, 'The file could not be shared.'));
     }
   }
 

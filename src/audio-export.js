@@ -1,6 +1,7 @@
 import coreURL from '@ffmpeg/core?url';
 import wasmURL from '@ffmpeg/core/wasm?url';
 import { AUDIO_FORMATS, transcodeArguments } from './audio-formats.js';
+import { asError } from './export-errors.js';
 
 export { AUDIO_FORMATS } from './audio-formats.js';
 
@@ -27,7 +28,7 @@ async function getFFmpeg() {
     return await ffmpegPromise;
   } catch (error) {
     ffmpegPromise = undefined;
-    throw error;
+    throw asError(error, 'The audio encoder could not be initialized.');
   }
 }
 
@@ -61,7 +62,7 @@ export async function transcodeAudio(wavBytes, format) {
   } catch (error) {
     ffmpeg.terminate();
     ffmpegPromise = undefined;
-    throw error;
+    throw asError(error, `Audio conversion to ${AUDIO_FORMATS[format].label} failed.`);
   } finally {
     try { await ffmpeg.deleteFile(inputName); } catch {}
     try { await ffmpeg.deleteFile(outputName); } catch {}
