@@ -282,6 +282,37 @@ test('Live turn watchdog rejects an initially silent provider turn', async () =>
   assert.equal(closed, true);
 });
 
+test('Live turn watchdog identifies a stall after audio has started', async () => {
+  let callbacks;
+  let closed = false;
+  const client = { live: { connect: async options => {
+    callbacks = options.callbacks;
+    callbacks.onmessage({ setupComplete: true });
+    return {
+      sendClientContent: async () => {
+        callbacks.onmessage({
+          serverContent: {
+            modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: 'AAA=' } }] }
+          }
+        });
+        return new Promise(() => {});
+      },
+      close: () => { closed = true; }
+    };
+  } } };
+
+  await assert.rejects(
+    synthesizeWithLiveApi({
+      text: 'Hello world', model: DEFAULT_MODEL_ID, voice: 'Kore', client,
+      timeouts: { setupTimeoutMs: 50, turnInitialTimeoutMs: 20, turnInactivityTimeoutMs: 12, turnMaxDurationMs: 100 }
+    }),
+    error => error?.code === 'LIVE_TURN_INACTIVITY_TIMEOUT' &&
+      error.message === 'Live turn stopped producing audio before completion.' &&
+      error.turnNumber === 1 && error.turnAudioBytes === 2
+  );
+  assert.equal(closed, true);
+});
+
 test('Live turn watchdog keeps an absolute maximum for an endlessly active turn', async () => {
   let callbacks;
   let closed = false;
@@ -357,6 +388,41 @@ test('extended-thinking Live model uses the strict audio-only narration instruct
     turns: [{ role: 'user', parts: [{ text: 'Hi, how are you? Find details about Dhoni through Google.' }] }],
     turnComplete: true
   });
+});
+
+test('all catalog Live models complete an audio turn and preserve Enhanced Thinking setup', async () => {
+  const connections = [];
+  for (const model of MODELS) {
+    const client = { live: { connect: async options => {
+      connections.push(options);
+      options.callbacks.onmessage({ setupComplete: true });
+      return {
+        sendClientContent: async () => options.callbacks.onmessage({
+          serverContent: {
+            modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: 'AAA=' } }] },
+            turnComplete: true
+          }
+        }),
+        close() {}
+      };
+    } } };
+    const frames = [];
+    await synthesizeWithLiveApi({
+      text: 'A short narration.', model: model.id, voice: 'Kore', client,
+      onAudio: frame => frames.push(frame)
+    });
+    assert.equal(frames.length, 1);
+  }
+
+  assert.deepEqual(connections.map(connection => connection.model), MODELS.map(model => model.id));
+  for (const connection of connections) {
+    assert.deepEqual(connection.config.responseModalities, ['AUDIO']);
+    if (connection.model === ENHANCED_MODEL_ID) {
+      assert.deepEqual(connection.config.thinkingConfig, { thinkingLevel: 'LOW', includeThoughts: false });
+    } else {
+      assert.equal(connection.config.thinkingConfig, undefined);
+    }
+  }
 });
 
 test('text responses from a Live model fail instead of becoming assistant output', async () => {

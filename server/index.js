@@ -175,13 +175,18 @@ export const MAX_TURNS_PER_LIVE_SESSION = 4;
 // Keep individual provider turns short enough for expressive speech in
 // languages whose words carry more characters than English words.  The
 // character bound is measured in JavaScript UTF-16 code units, matching the
-// request character limits used elsewhere in the application.
+// request character limits used elsewhere in the application. A smaller
+// bound prevents a long Telugu/Hindi turn from producing a minute of audio
+// before the provider sends turnComplete.
 export const SPEECH_CHUNK_MAX_WORDS = 100;
-export const SPEECH_CHUNK_MAX_CHARACTERS = 750;
+export const SPEECH_CHUNK_MAX_CHARACTERS = 500;
 
 export const LIVE_SETUP_TIMEOUT_MS = 20_000;
 export const LIVE_TURN_INITIAL_TIMEOUT_MS = 60_000;
-export const LIVE_TURN_INACTIVITY_TIMEOUT_MS = 30_000;
+// Live providers can pause between audio bursts before sending turnComplete.
+// Keep the initial and post-audio grace periods separate from the absolute
+// safety limit so active narration is not cut off by the old 30-second timer.
+export const LIVE_TURN_INACTIVITY_TIMEOUT_MS = 60_000;
 export const LIVE_TURN_MAX_DURATION_MS = 180_000;
 
 const isSentenceTerminal = character => character === '…' || character === '।' || character === '॥' ||
@@ -900,16 +905,19 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
         .replaceAll(apiKey || '\0', '[redacted]')
         .replaceAll(text, '[script redacted]')
         .slice(0, 500);
-      logger.error('[sonora] Synthesis failed', {
+      const diagnostics = {
         name: error instanceof Error ? error.name : 'UnknownError',
         message: redactDiagnostic(error instanceof Error ? error.message : error),
         code: typeof error?.code === 'string' || typeof error?.code === 'number' ? error.code : undefined,
         status: Number.isInteger(error?.status) ? error.status : undefined,
-         closeReason: redactDiagnostic(error?.closeReason) || undefined,
-         completedChunks,
-         totalChunks,
-         audioBytes
-       });
+        closeReason: redactDiagnostic(error?.closeReason) || undefined,
+        completedChunks,
+        totalChunks,
+        audioBytes
+      };
+      if (Number.isSafeInteger(error?.turnNumber)) diagnostics.turnNumber = error.turnNumber;
+      if (Number.isSafeInteger(error?.turnAudioBytes)) diagnostics.turnAudioBytes = error.turnAudioBytes;
+      logger.error('[sonora] Synthesis failed', diagnostics);
       if (!res.destroyed && !res.writableEnded) {
         if (res.headersSent) {
           // Reserve a small terminal event even when the audio buffer cap hit.
@@ -971,14 +979,16 @@ export async function synthesizeWithLiveApi({
   for (let first = 0; first < chunks.length; first += MAX_TURNS_PER_LIVE_SESSION) {
     if (signal.aborted) throw new Error('Client disconnected.');
     const connectionController = new AbortController();
-    let session, pending, fatal, finished = false, turnStartBytes = audioBytes;
+    let session, pending, fatal, finished = false, turnStartBytes = audioBytes, turnNumber = 0;
     let callbackWork = Promise.resolve();
     let rejectFailure;
     const failure = new Promise((_, reject) => { rejectFailure = reject; });
     failure.catch(() => {});
-    const timeoutError = (message, code) => {
+    const currentTurnAudioBytes = () => Math.max(0, audioBytes - turnStartBytes);
+    const timeoutError = (message, code, details = {}) => {
       const error = new Error(message);
       error.code = code;
+      Object.assign(error, details);
       return error;
     };
     const clearWaiterTimers = waiter => {
@@ -1008,7 +1018,13 @@ export async function synthesizeWithLiveApi({
       }
       connectionController.abort();
     };
-    const abort = () => fail(new Error('Client disconnected.'));
+    const abort = () => {
+      const error = new Error('Client disconnected.');
+      error.code = 'CLIENT_DISCONNECTED';
+      error.turnNumber = turnNumber;
+      error.turnAudioBytes = currentTurnAudioBytes();
+      fail(error);
+    };
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort();
     const waitFor = (kind, timeout, timeoutCode) => new Promise((resolve, reject) => {
@@ -1026,7 +1042,16 @@ export async function synthesizeWithLiveApi({
       if (fatal || finished || waiter?.kind !== 'turn' || waiter.turnCompleteSeen) return;
       if (waiter.inactivityTimer !== undefined) clearTimeout(waiter.inactivityTimer);
       waiter.inactivityTimer = setTimeout(
-        () => fail(timeoutError('Live turn produced no audio for too long.', 'LIVE_TURN_INACTIVITY_TIMEOUT')),
+        () => {
+          const turnAudioBytes = currentTurnAudioBytes();
+          fail(timeoutError(
+            turnAudioBytes > 0
+              ? 'Live turn stopped producing audio before completion.'
+              : 'Live turn did not begin producing audio.',
+            'LIVE_TURN_INACTIVITY_TIMEOUT',
+            { turnNumber, turnAudioBytes }
+          ));
+        },
         turnInactivityTimeoutMs
       );
     };
@@ -1038,14 +1063,22 @@ export async function synthesizeWithLiveApi({
         reject,
         inactivityTimer: undefined,
         maxTimer: setTimeout(
-          () => fail(timeoutError('Live turn exceeded its maximum duration.', 'LIVE_TURN_MAX_DURATION')),
+          () => fail(timeoutError(
+            'Live turn exceeded its maximum duration.',
+            'LIVE_TURN_MAX_DURATION',
+            { turnNumber, turnAudioBytes: currentTurnAudioBytes() }
+          )),
           turnMaxDurationMs
         ),
         turnCompleteSeen: false
       };
       pending = waiter;
       waiter.inactivityTimer = setTimeout(
-        () => fail(timeoutError('Live turn did not begin producing audio.', 'LIVE_TURN_INACTIVITY_TIMEOUT')),
+        () => fail(timeoutError(
+          'Live turn did not begin producing audio.',
+          'LIVE_TURN_INACTIVITY_TIMEOUT',
+          { turnNumber, turnAudioBytes: 0 }
+        )),
         turnInitialTimeoutMs
       );
     });
@@ -1126,6 +1159,8 @@ export async function synthesizeWithLiveApi({
             const error = new Error(`Live session closed before completion (code ${event?.code}).`);
             error.code = event?.code;
             error.closeReason = event?.reason;
+            error.turnNumber = turnNumber;
+            error.turnAudioBytes = currentTurnAudioBytes();
             fail(error);
           }
         }
@@ -1134,7 +1169,9 @@ export async function synthesizeWithLiveApi({
       session = await Promise.race([connection, failure]);
       await Promise.race([setup, failure]);
       const sessionChunks = chunks.slice(first, first + MAX_TURNS_PER_LIVE_SESSION);
-      for (const chunk of sessionChunks) {
+      for (let offset = 0; offset < sessionChunks.length; offset++) {
+        const chunk = sessionChunks[offset];
+        turnNumber = first + offset + 1;
         if (fatal || signal.aborted) throw fatal || new Error('Client disconnected.');
         turnStartBytes = audioBytes;
         const turn = waitForTurn();

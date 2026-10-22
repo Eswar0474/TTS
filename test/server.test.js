@@ -53,6 +53,14 @@ test('chunking applies word and character bounds across English, Telugu, Hindi, 
     assert.ok(speechChunks.every(chunk => chunk.length <= SPEECH_CHUNK_MAX_CHARACTERS));
   }
 });
+
+test('default chunks use the reduced multilingual provider bound', () => {
+  const input = 'తెలుగు వాక్యం '.repeat(100);
+  const chunks = splitIntoChunks(input);
+  assert.ok(chunks.every(chunk => chunk.length <= 500));
+  assert.ok(chunks.every(chunk => (chunk.match(/\S+/gu) || []).length <= SPEECH_CHUNK_MAX_WORDS));
+});
+
 test('chunking recognizes Indic sentence punctuation and preserves long tokens and surrogate pairs', () => {
   const multilingual = 'ఇది మొదటి వాక్యం। ఇది రెండవ వాక్యం॥ यह पहला वाक्य है। यह दूसरा वाक्य है॥';
   const multilingualChunks = splitIntoChunks(multilingual, 100, 30);

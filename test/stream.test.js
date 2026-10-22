@@ -311,6 +311,64 @@ test('failed or incomplete synthesis never emits done or leaks errors', async t 
   });
 });
 
+test('stream logs turn-level timeout diagnostics without exposing the script', async t => {
+  const logged = [];
+  const base = await serve(t, async ({ onAudio }) => {
+    onAudio(Buffer.from([0, 0]));
+    const error = new Error('Live turn stopped producing audio before completion.');
+    error.code = 'LIVE_TURN_INACTIVITY_TIMEOUT';
+    error.turnNumber = 1;
+    error.turnAudioBytes = 2;
+    throw error;
+  }, undefined, { error: (...args) => logged.push(args) });
+
+  const response = await post(base, { ...body, text: 'private script text' });
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.deepEqual(logged[0][1], {
+    name: 'Error',
+    message: 'Live turn stopped producing audio before completion.',
+    code: 'LIVE_TURN_INACTIVITY_TIMEOUT',
+    status: undefined,
+    closeReason: undefined,
+    completedChunks: 0,
+    totalChunks: 1,
+    audioBytes: 2,
+    turnNumber: 1,
+    turnAudioBytes: 2
+  });
+});
+
+test('stream logs client disconnect diagnostics separately from provider failures', async t => {
+  const logged = [];
+  const base = await serve(t, async ({ signal, onAudio }) => {
+    onAudio(Buffer.from([0, 0]));
+    await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+    const error = new Error('Client disconnected.');
+    error.code = 'CLIENT_DISCONNECTED';
+    error.turnNumber = 1;
+    error.turnAudioBytes = 2;
+    throw error;
+  }, undefined, { error: (...args) => logged.push(args) });
+
+  const controller = new AbortController();
+  const responsePromise = fetch(`${base}/api/generate/stream`, {
+    method: 'POST',
+    signal: controller.signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const response = await responsePromise;
+  assert.equal(response.status, 200);
+  controller.abort();
+  try { await response.text(); } catch {}
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(logged.length, 1);
+  assert.equal(logged[0][1].code, 'CLIENT_DISCONNECTED');
+  assert.equal(logged[0][1].turnNumber, 1);
+  assert.equal(logged[0][1].turnAudioBytes, 2);
+});
+
 test('missing configuration blocks requests without contacting provider', async t => {
   const base = await serve(t, () => { throw new Error('must not run'); }, { apiKey: '', model: DEFAULT_MODEL_ID });
   assert.equal((await post(base)).status, 503);
