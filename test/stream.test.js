@@ -397,6 +397,13 @@ test('Pro plan accepts full 3000-word payload in a single request and enforces l
   const doneEvent = events[events.length - 1];
   assert.equal(doneEvent.type, 'done');
   assert.ok(!events.some(e => e.type === 'error'));
+
+  const audioEvents = events.filter(e => e.type === 'audio');
+  assert.equal(audioEvents.length, 17);
+  assert.ok(audioEvents.every(e => typeof e.data === 'string' && e.data.length > 0));
+  const decodedAudioBytes = audioEvents.reduce((acc, ev) => acc + decodeBase64PCM(ev.data).byteLength, 0);
+  assert.equal(decodedAudioBytes, 17 * 2);
+
   assert.equal(synthesisCalls, 1);
   assert.equal(totalChunksProcessed, 17);
 
@@ -498,6 +505,13 @@ test('Studio plan accepts full 5000-word peak capacity payload in a single reque
   const doneEvent = events[events.length - 1];
   assert.equal(doneEvent.type, 'done');
   assert.ok(!events.some(e => e.type === 'error'));
+
+  const audioEvents = events.filter(e => e.type === 'audio');
+  assert.equal(audioEvents.length, 28);
+  assert.ok(audioEvents.every(e => typeof e.data === 'string' && e.data.length > 0));
+  const decodedAudioBytes = audioEvents.reduce((acc, ev) => acc + decodeBase64PCM(ev.data).byteLength, 0);
+  assert.equal(decodedAudioBytes, 28 * 2);
+
   assert.equal(synthesisCalls, 1);
   assert.equal(totalChunksProcessed, 28);
 
