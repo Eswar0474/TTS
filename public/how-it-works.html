@@ -8,17 +8,17 @@
     <link rel="stylesheet" href="/site-info.css" />
     <!-- seo:head:start -->
     <title>How It Works &amp; FAQ — Sonora Voice Studio</title>
-    <meta name="description" content="Learn how Sonora Voice Studio turns scripts into expressive AI voice narrations, how delivery tags and exports work, and how daily allowances apply." />
+    <meta name="description" content="Learn how Sonora Voice Studio turns scripts into expressive AI voice narrations, how per-request word limits work, and how to estimate generation time and export audio." />
     <link rel="canonical" href="https://sonora.rawse.in/how-it-works" />
     <meta name="robots" content="index, follow" />
     <meta property="og:title" content="How It Works &amp; FAQ — Sonora Voice Studio" />
-    <meta property="og:description" content="Learn how Sonora Voice Studio turns scripts into expressive AI voice narrations, how delivery tags and exports work, and how daily allowances apply." />
+    <meta property="og:description" content="Learn how Sonora Voice Studio turns scripts into expressive AI voice narrations, how per-request word limits work, and how to estimate generation time and export audio." />
     <meta property="og:site_name" content="Sonora Voice Studio" />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://sonora.rawse.in/how-it-works" />
     <meta name="twitter:card" content="summary" />
     <meta name="twitter:title" content="How It Works &amp; FAQ — Sonora Voice Studio" />
-    <meta name="twitter:description" content="Learn how Sonora Voice Studio turns scripts into expressive AI voice narrations, how delivery tags and exports work, and how daily allowances apply." />
+    <meta name="twitter:description" content="Learn how Sonora Voice Studio turns scripts into expressive AI voice narrations, how per-request word limits work, and how to estimate generation time and export audio." />
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
@@ -28,7 +28,7 @@
             "@id": "https://sonora.rawse.in/how-it-works#webpage",
             "url": "https://sonora.rawse.in/how-it-works",
             "name": "How It Works & FAQ — Sonora Voice Studio",
-            "description": "Learn how Sonora Voice Studio turns scripts into expressive AI voice narrations, how delivery tags and exports work, and how daily allowances apply.",
+            "description": "Learn how Sonora Voice Studio turns scripts into expressive AI voice narrations, how per-request word limits work, and how to estimate generation time and export audio.",
             "inLanguage": "en"
           },
           {
@@ -38,10 +38,10 @@
             "mainEntity": [
               {
                 "@type": "Question",
-                "name": "How does the daily word allowance work?",
+                "name": "How do the word limits work?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "Guests can submit up to 50 whitespace-separated words per IP per UTC day. Signed-in Google accounts can submit up to 1,000 words per account per UTC day. Words in the script and delivery tags both count. Allowances reset at 00:00 UTC."
+                  "text": "Guests can submit up to 50 words per request with Low Quality. After Google sign-in, each request can contain up to 1,000 words with Low Quality, 500 with Balanced, or 250 with Enhanced Thinking. Verified admins are exempt from these word limits; character and audio safety limits still apply. Whitespace-separated words in the script and delivery tags both count. There is no daily word or request quota. Short-window anti-abuse and server-capacity safeguards still apply."
                 }
               },
               {
@@ -49,7 +49,7 @@
                 "name": "Which models can I use?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "Guests can use Low Quality. Signed-in free accounts can use Low Quality and Balanced. Enhanced Thinking is temporarily restricted to admins while paid-plan verification is built."
+                  "text": "Guests can use Low Quality. Signing in with Google enables Low Quality, Balanced, and Enhanced Thinking. No subscription is required."
                 }
               },
               {
@@ -57,7 +57,15 @@
                 "name": "Which audio formats can I export?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "Free accounts can download MP3. Plus and higher plans are intended to include WAV, FLAC, AAC, and OGG after billing and subscription verification are available."
+                  "text": "Guests can download MP3. Signing in with Google enables all five formats: MP3, WAV, FLAC, AAC, and OGG."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "How long will generation take?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "An approximate generation time appears above Generate audio before you start. It depends on input length and the selected model, not measured provider performance. A live elapsed timer runs during generation. Actual time varies with language, delivery, network, and provider load."
                 }
               },
               {
@@ -104,7 +112,7 @@
       <section class="help-intro" aria-labelledby="page-title">
         <p class="site-info-kicker">SONORA · VOICE STUDIO</p>
         <h1 id="page-title">How it works &amp; FAQ</h1>
-        <p class="lead">Learn how Sonora Voice Studio turns scripts into expressive AI voice narrations, how delivery tags and exports work, and how daily allowances apply.</p>
+        <p class="lead">Learn how Sonora Voice Studio turns scripts into expressive AI voice narrations, how per-request word limits work, and how to estimate generation time and export audio.</p>
         <p class="help-note">The studio is interactive, so JavaScript is required to generate, preview, and export audio. This guide remains readable without it.</p>
         <nav class="help-page-nav" aria-label="Guide sections">
           <a href="/#studio">Open the Sonora studio</a>
@@ -119,8 +127,8 @@
         <p>Sonora turns your written script into an AI voice narration while keeping the generation and export controls in the studio.</p>
         <ol class="site-steps">
           <li><strong>Write and shape.</strong> Paste or write a script, then add optional emotion and delivery tags to guide the reading.</li>
-          <li><strong>Choose and preview.</strong> Select an engine and voice, generate the narration, and listen to the completed audio.</li>
-          <li><strong>Export.</strong> Free accounts can download MP3; paid plans will include additional formats when billing is available.</li>
+          <li><strong>Choose and preview.</strong> Select an engine and voice, check the approximate generation time, generate the narration, and listen to the completed audio.</li>
+          <li><strong>Export.</strong> Guests can download MP3. Sign in with Google to enable WAV, FLAC, AAC, and OGG as well.</li>
         </ol>
         <nav class="section-links" aria-label="How it works links">
           <a href="#faq">Continue to the FAQ</a>
@@ -133,16 +141,20 @@
         <h2 id="faq-heading">Frequently asked questions</h2>
         <div class="site-faq-list">
           <details>
-            <summary>How does the daily word allowance work?</summary>
-            <p>Guests can submit up to 50 whitespace-separated words per IP per UTC day. Signed-in Google accounts can submit up to 1,000 words per account per UTC day. Words in the script and delivery tags both count. Allowances reset at 00:00 UTC.</p>
+            <summary>How do the word limits work?</summary>
+            <p>Guests can submit up to 50 words per request with Low Quality. After Google sign-in, each request can contain up to 1,000 words with Low Quality, 500 with Balanced, or 250 with Enhanced Thinking. Verified admins are exempt from these word limits; character and audio safety limits still apply. Whitespace-separated words in the script and delivery tags both count. There is no daily word or request quota. Short-window anti-abuse and server-capacity safeguards still apply.</p>
           </details>
           <details>
             <summary>Which models can I use?</summary>
-            <p>Guests can use Low Quality. Signed-in free accounts can use Low Quality and Balanced. Enhanced Thinking is temporarily restricted to admins while paid-plan verification is built.</p>
+            <p>Guests can use Low Quality. Signing in with Google enables Low Quality, Balanced, and Enhanced Thinking. No subscription is required.</p>
           </details>
           <details>
             <summary>Which audio formats can I export?</summary>
-            <p>Free accounts can download MP3. Plus and higher plans are intended to include WAV, FLAC, AAC, and OGG after billing and subscription verification are available. Paid access is not active yet.</p>
+            <p>Guests can download MP3. Signing in with Google enables all five formats: MP3, WAV, FLAC, AAC, and OGG.</p>
+          </details>
+          <details>
+            <summary>How long will generation take?</summary>
+            <p>An approximate generation time appears above Generate audio before you start. It depends on input length and the selected model, not measured provider performance. A live elapsed timer runs during generation. Actual time varies with language, delivery, network, and provider load.</p>
           </details>
           <details>
             <summary>Will tags produce an exact voice delivery?</summary>
@@ -164,7 +176,6 @@
       <span>SONORA · VOICE STUDIO</span>
       <nav aria-label="Footer navigation">
         <a href="/#studio">Back to studio</a>
-        <a href="/pricing">Plans &amp; pricing</a>
         <a href="#how-it-works">How it works</a>
         <a href="#faq">FAQ</a>
       </nav>

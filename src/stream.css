@@ -23,7 +23,7 @@
 .generation-progress progress::-moz-progress-bar { border-radius: 999px; background: linear-gradient(90deg, #b87f53, var(--accent-bright)); }
 .textarea-footer { flex-wrap: wrap; gap: 8px; }
 button:disabled { cursor: not-allowed; }
-@media (max-width: 650px) { .output-controls { justify-content: flex-start; width: 100%; } .tag-hint { font-size: 10px; } }
+@media (max-width: 650px) { .output-controls { justify-content: flex-start; width: 100%; } }
 
 .topbar {
   height: 74px;
@@ -115,29 +115,12 @@ button:disabled { cursor: not-allowed; }
 .expression-label { font-size: 11px; }
 .textarea-footer { font-size: 12px; }
 .word-counter { color: var(--accent-bright); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.word-counter.admin { white-space: normal; }
 .word-counter span { color: #87827b; }
-.daily-quota { font-size: 13px; line-height: 1.5; }
-.quota-disclaimer, .expression-hint { font-size: 12px; line-height: 1.5; }
+.word-counter.over { color: var(--danger); }
+.expression-hint { font-size: 12px; line-height: 1.5; }
 .settings-panel label { font-size: 11px; }
 .textarea-wrap { position: relative; }
-.quota-lock-message {
-  position: absolute;
-  z-index: 2;
-  inset: 0 0 42px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 16px;
-  background: rgba(10, 11, 14, .76);
-  color: #ddd3c5;
-  text-align: center;
-  pointer-events: none;
-}
-.quota-lock-message strong { color: #f0d2ad; font-size: 16px; }
-.quota-lock-message span { color: #a9a199; font-size: 13px; }
-.quota-lock-message time { color: var(--accent-bright); font: 600 24px 'DM Mono', monospace; font-variant-numeric: tabular-nums; }
 .format-picker {
   display: grid;
   gap: 5px;
@@ -270,9 +253,7 @@ button:disabled { cursor: not-allowed; }
   .expression-entry small, .expression-hint, .engine-description, .config-status { font-size: 13px; }
   .textarea-wrap textarea { min-height: 200px; padding: 15px; font-size: 16px; }
   .textarea-footer { align-items: flex-start; font-size: 12px; }
-  .tag-hint { font-size: 12px; }
-  .daily-quota { font-size: 13px; }
-  .quota-disclaimer { font-size: 12px; }
+  .request-guidance, .estimate-note { font-size: 12px; }
   .settings-panel label { font-size: 12px; }
   .model-note { font-size: 13px; line-height: 1.5; }
   .voice-preview strong { font-size: 14px; }

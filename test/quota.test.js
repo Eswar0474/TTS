@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPostgresDailyWordQuota, PLAN_WORD_LIMITS } from '../server/quota.js';
+import { createPostgresDailyWordQuota, createMemoryDailyWordQuota } from '../server/quota.js';
 
 function createFakePostgresPool() {
   const usage = new Map();
@@ -13,10 +13,11 @@ function createFakePostgresPool() {
           sql.startsWith('CREATE TABLE IF NOT EXISTS daily_word_usage') ||
           sql.startsWith('CREATE TABLE IF NOT EXISTS users') ||
           sql.startsWith('ALTER TABLE users ADD COLUMN') ||
+          sql.startsWith('ALTER TABLE daily_word_usage DROP CONSTRAINT') ||
+          sql.includes('daily_word_usage_words_used_nonnegative') ||
           sql.includes('session') ||
           sql.startsWith('CREATE INDEX IF NOT EXISTS') ||
-          sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK' ||
-          sql.startsWith('DELETE FROM daily_word_usage')) return { rows: [] };
+          sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
       if (sql.includes('SELECT migration FROM sonora_schema_migrations')) {
         return { rows: migrations.has(values[0]) ? [{ migration: values[0] }] : [] };
       }
@@ -25,10 +26,11 @@ function createFakePostgresPool() {
         return { rows: [] };
       }
       if (sql.includes('INSERT INTO daily_word_usage')) {
-        const [day, subjectType, subjectHash, words, limit] = values;
+        assert.equal(values.length, 4);
+        assert.doesNotMatch(sql, /\bWHERE daily_word_usage\.words_used/);
+        const [day, subjectType, subjectHash, words] = values;
         const key = `${day}:${subjectType}:${subjectHash}`;
         const current = usage.get(key) ?? 0;
-        if (current + words > limit) return { rows: [] };
         const wordsUsed = current + words;
         usage.set(key, wordsUsed);
         return { rows: [{ words_used: wordsUsed }] };
@@ -48,7 +50,7 @@ function createFakePostgresPool() {
   };
 }
 
-test('PostgreSQL quota applies separate atomic guest and account limits', async () => {
+test('PostgreSQL usage accumulates atomically beyond former daily caps for accounts and guests', async () => {
   const pool = createFakePostgresPool();
   let currentTime = new Date('2026-10-12T12:00:00.000Z');
   const quota = createPostgresDailyWordQuota({
@@ -63,28 +65,28 @@ test('PostgreSQL quota applies separate atomic guest and account limits', async 
   });
   const userId = 'account-123';
 
-  const first = await quota.consumeFor('user', userId, 999);
-  assert.equal(first.allowed, true);
-  assert.equal(first.dailyWordQuota.remaining, 1);
+  const first = await quota.recordFor('user', userId, 999);
+  assert.deepEqual(first, { wordsUsed: 999, date: '2026-10-12' });
   const concurrent = await Promise.all([
-    quota.consumeFor('user', userId, 1),
-    secondInstance.consumeFor('user', userId, 1)
+    quota.recordFor('user', userId, 1),
+    secondInstance.recordFor('user', userId, 2)
   ]);
-  assert.equal(concurrent.filter(({ allowed }) => allowed).length, 1);
-  assert.equal((await secondInstance.getUsageFor('user', userId)).used, 1000);
-  assert.equal((await quota.getUsageFor('ip', userId)).used, 0);
-  const guest = await quota.consumeFor('ip', userId, 50);
-  assert.equal(guest.allowed, true);
-  assert.equal(guest.dailyWordQuota.limit, 50);
-  assert.equal(guest.dailyWordQuota.remaining, 0);
-  assert.equal((await quota.consumeFor('ip', userId, 1)).allowed, false);
-  assert.equal((await quota.getUsageFor('user', userId)).limit, 1000);
+  assert.deepEqual(concurrent.map(({ wordsUsed }) => wordsUsed).sort((a, b) => a - b), [1000, 1002]);
+  assert.deepEqual(await secondInstance.getUsageFor('user', userId), { wordsUsed: 1002, date: '2026-10-12' });
+  assert.deepEqual(await quota.getUsageFor('ip', userId), { wordsUsed: 0, date: '2026-10-12' });
+  assert.equal((await quota.recordFor('ip', userId, 50)).wordsUsed, 50);
+  assert.equal((await quota.recordFor('ip', userId, 50)).wordsUsed, 100);
+  assert.equal((await quota.getUsageFor('ip', userId)).wordsUsed, 100);
   assert.ok(pool.calls.some(({ sql }) => sql.includes("CHECK (subject_type IN ('ip', 'user'))")));
+  assert.ok(pool.calls.some(({ sql }) => sql.includes('daily_word_usage_words_used_nonnegative')));
+  assert.ok(!pool.calls.some(({ sql }) => sql.startsWith('DELETE FROM daily_word_usage')));
   assert.ok(pool.calls.filter(({ sql }) => sql.includes('INSERT INTO daily_word_usage'))
     .every(({ values }) => values[2] !== userId && /^[a-f0-9]{64}$/.test(values[2])));
 
   currentTime = new Date('2026-10-13T00:00:00.000Z');
-  assert.equal((await quota.getUsageFor('user', userId)).used, 0);
+  assert.deepEqual(await quota.getUsageFor('user', userId), { wordsUsed: 0, date: '2026-10-13' });
+  currentTime = new Date('2026-10-12T12:00:00.000Z');
+  assert.equal((await quota.getUsageFor('user', userId)).wordsUsed, 1002);
 });
 
 test('PostgreSQL schema initialization succeeds when transaction poolers reject advisory locks', async () => {
@@ -112,48 +114,24 @@ test('PostgreSQL schema initialization succeeds when transaction poolers reject 
     now: () => new Date('2026-10-12T12:00:00.000Z')
   });
   const result = await quota.getUsageFor('ip', '192.0.2.1');
-  assert.equal(result.used, 0);
-  assert.equal(result.limit, 50);
+  assert.deepEqual(result, { wordsUsed: 0, date: '2026-10-12' });
 });
 
-test('plan word limits apply custom quotas for plus, pro, and studio', async () => {
-  const pool = createFakePostgresPool();
-  const quota = createPostgresDailyWordQuota({
-    pool,
-    secret: 'plan-test-secret',
-    now: () => new Date('2026-10-12T12:00:00.000Z')
-  });
-
-  const plusUsage = await quota.getUsageFor('user', 'user_plus', 2000);
-  assert.equal(plusUsage.limit, 2000);
-  assert.equal(plusUsage.remaining, 2000);
-
-  const plusConsume = await quota.consumeFor('user', 'user_plus', 1500, 2000);
-  assert.equal(plusConsume.allowed, true);
-  assert.equal(plusConsume.dailyWordQuota.used, 1500);
-  assert.equal(plusConsume.dailyWordQuota.remaining, 500);
-
-  const proUsage = await quota.getUsageFor('user', 'user_pro', 3000);
-  assert.equal(proUsage.limit, 3000);
-  assert.equal(proUsage.remaining, 3000);
-
-  const proConsume = await quota.consumeFor('user', 'user_pro', 2500, 3000);
-  assert.equal(proConsume.allowed, true);
-  assert.equal(proConsume.dailyWordQuota.used, 2500);
-  assert.equal(proConsume.dailyWordQuota.remaining, 500);
-
-  const studioUsage = await quota.getUsageFor('user', 'user_studio', 5000);
-  assert.equal(studioUsage.limit, 5000);
-  assert.equal(studioUsage.remaining, 5000);
-
-  const studioConsume = await quota.consumeFor('user', 'user_studio', 4500, 5000);
-  assert.equal(studioConsume.allowed, true);
-  assert.equal(studioConsume.dailyWordQuota.used, 4500);
-  assert.equal(studioConsume.dailyWordQuota.remaining, 500);
-
-  assert.equal(PLAN_WORD_LIMITS.guest, 50);
-  assert.equal(PLAN_WORD_LIMITS.free, 1000);
-  assert.equal(PLAN_WORD_LIMITS.plus, 2000);
-  assert.equal(PLAN_WORD_LIMITS.pro, 3000);
-  assert.equal(PLAN_WORD_LIMITS.studio, 5000);
+test('in-memory usage accumulates exactly beyond old caps and isolates subjects by day', async () => {
+  let currentTime = new Date('2026-10-12T12:00:00.000Z');
+  const usage = createMemoryDailyWordQuota({ secret: 'usage-test-secret', now: () => currentTime });
+  assert.deepEqual(await usage.getUsageFor('user', 'account-1'), { wordsUsed: 0, date: '2026-10-12' });
+  assert.equal((await usage.recordFor('ip', '192.0.2.1', 50)).wordsUsed, 50);
+  assert.equal((await usage.recordFor('ip', '192.0.2.1', 50)).wordsUsed, 100);
+  assert.deepEqual((await Promise.all([
+    usage.recordFor('user', 'account-1', 1000),
+    usage.recordFor('user', 'account-1', 500)
+  ])).map(item => item.wordsUsed), [1000, 1500]);
+  assert.equal((await usage.getUsageFor('user', 'account-1')).wordsUsed, 1500);
+  assert.equal((await usage.getUsageFor('user', 'account-2')).wordsUsed, 0);
+  assert.equal((await usage.getUsageFor('ip', '192.0.2.1')).wordsUsed, 100);
+  currentTime = new Date('2026-10-13T00:00:00.000Z');
+  assert.deepEqual(await usage.getUsageFor('user', 'account-1'), { wordsUsed: 0, date: '2026-10-13' });
+  currentTime = new Date('2026-10-12T12:00:00.000Z');
+  assert.equal((await usage.getUsageFor('user', 'account-1')).wordsUsed, 1500);
 });

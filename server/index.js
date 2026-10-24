@@ -11,14 +11,10 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import {
   createMemoryDailyWordQuota,
-  createPostgresDailyWordQuota,
-  createUnavailableDailyWordQuota,
-  DAILY_WORD_LIMIT,
-  GUEST_DAILY_WORD_LIMIT
+  createPostgresDailyWordQuota
 } from './quota.js';
 import { createSeoRouter, privateNoindex, DEFAULT_SITE_URL } from './seo.js';
-export { DAILY_WORD_LIMIT };
-export { GUEST_DAILY_WORD_LIMIT };
+export const GUEST_WORD_LIMIT = 50;
 
 const publicDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist');
 const CHARACTER_LIMIT = 1_000_000;
@@ -148,10 +144,15 @@ export function securePostgresOptions(databaseUrl) {
 export const DEFAULT_ENGINE = 'gemini-2.5-flash-native-audio-preview-12-2025';
 export const DEFAULT_MODEL_ID = DEFAULT_ENGINE;
 export const ENHANCED_MODEL_ID = 'gemini-3.8-live-extended-thinking';
+export const MODEL_WORD_LIMITS = Object.freeze({
+  [DEFAULT_MODEL_ID]: 1_000,
+  'gemini-3.8-live': 500,
+  [ENHANCED_MODEL_ID]: 250
+});
 export const MODELS = Object.freeze([
-  { id: DEFAULT_MODEL_ID, name: 'Gemini 2.5 Flash Native Audio Dialog', transport: 'live', role: 'recommended', description: 'SRS Live audio model. Audio generation is unverified; this cap is an application limit, not a provider quota.', characterLimit: 1_000_000, verified: false, requiresLogin: false, requiresAdmin: false },
-  { id: 'gemini-3.8-live', name: 'Gemini 3.8 Live', transport: 'live', role: 'alternative', description: 'SRS Live model. Audio generation is unverified; this cap is an application limit, not a provider quota.', characterLimit: 65_000, verified: false, requiresLogin: true, requiresAdmin: false },
-  { id: ENHANCED_MODEL_ID, name: 'Gemini 3.8 Live Extended Thinking', transport: 'live', role: 'premium', description: 'Enhanced Thinking is temporarily restricted to admins while paid access is being built.', characterLimit: 65_000, verified: false, requiresLogin: false, requiresAdmin: true }
+  { id: DEFAULT_MODEL_ID, name: 'Gemini 2.5 Flash Native Audio Dialog', transport: 'live', role: 'recommended', description: 'SRS Live audio model with a 1,000-word signed-in request limit; guests can submit up to 50 words per request.', characterLimit: 1_000_000, wordLimit: MODEL_WORD_LIMITS[DEFAULT_MODEL_ID], verified: false, requiresLogin: false, requiresAdmin: false },
+  { id: 'gemini-3.8-live', name: 'Gemini 3.8 Live', transport: 'live', role: 'alternative', description: 'SRS Live model for signed-in users with a 500-word request limit.', characterLimit: 65_000, wordLimit: MODEL_WORD_LIMITS['gemini-3.8-live'], verified: false, requiresLogin: true, requiresAdmin: false },
+  { id: ENHANCED_MODEL_ID, name: 'Gemini 3.8 Live Extended Thinking', transport: 'live', role: 'premium', description: 'Enhanced Thinking for signed-in users with a 250-word request limit.', characterLimit: 65_000, wordLimit: MODEL_WORD_LIMITS[ENHANCED_MODEL_ID], verified: false, requiresLogin: true, requiresAdmin: false }
 ].map(Object.freeze));
 export const MODEL_LIMITS = Object.freeze({
   'gemini-2.5-flash-native-audio-dialog': CHARACTER_LIMIT,
@@ -301,32 +302,13 @@ export const getSpeechChunks = input => {
   return speech;
 };
 
-export async function sweepExpiredSubscriptions(pool, logger = console) {
-  if (!pool || typeof pool.query !== 'function') return 0;
-  try {
-    const result = await pool.query(
-      `UPDATE users
-       SET plan = 'free', expire_date = NULL, updated_at = NOW()
-       WHERE expire_date IS NOT NULL AND expire_date <= NOW() AND plan <> 'free'
-       RETURNING google_id, email, plan`
-    );
-    if (result.rowCount > 0) {
-      logger.info?.(`[sonora] Auto-downgraded ${result.rowCount} expired subscription(s) to free.`);
-    }
-    return result.rowCount;
-  } catch (error) {
-    logSafeError(logger, '[sonora] Subscription sweeper failed', error);
-    return 0;
-  }
-}
-
 export function createApp({ synthesize, config = {}, logger = console, quotaStore } = {}) {
   // Capture configuration independently for every app, including test instances.
   const apiKey = config.apiKey ?? process.env.GEMINI_API_KEY;
   const configuredModel = config.model ?? process.env.GEMINI_LIVE_MODEL ?? process.env.GEMINI_DEFAULT_MODEL ?? DEFAULT_MODEL_ID;
   const configuredModelId = configuredModel === DEFAULT_ENGINE ? DEFAULT_MODEL_ID : configuredModel;
   const configuredDefaultModel = MODELS.find(({ id }) => id === configuredModelId);
-  const defaultModel = configuredDefaultModel && !configuredDefaultModel.requiresLogin && !configuredDefaultModel.requiresAdmin
+  const defaultModel = configuredDefaultModel && !configuredDefaultModel.requiresLogin
     ? configuredDefaultModel
     : MODELS[0];
   const defaultModelId = defaultModel.id;
@@ -340,23 +322,14 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
     pool = new Pool(poolOptions);
     pool.on('error', error => logSafeError(logger, '[sonora] PostgreSQL pool error', error));
   }
-  const quotaSecret = config.quotaSecret ?? process.env.DAILY_QUOTA_SECRET ?? apiKey ?? 'sonora-unconfigured';
-  const dailyWordQuota = quotaStore ?? (pool
-    ? createPostgresDailyWordQuota({ pool, secret: quotaSecret })
+  const usageSecret = config.quotaSecret ?? process.env.DAILY_QUOTA_SECRET ?? apiKey ?? 'sonora-unconfigured';
+  const wordUsageStore = quotaStore ?? (pool
+    ? createPostgresDailyWordQuota({ pool, secret: usageSecret })
     : process.env.NODE_ENV === 'production'
-      ? createUnavailableDailyWordQuota()
-      : createMemoryDailyWordQuota({ secret: quotaSecret }));
+      ? null
+      : createMemoryDailyWordQuota({ secret: usageSecret }));
   if (!quotaStore && !pool && process.env.NODE_ENV !== 'production') {
-    logger.warn?.('[sonora] DATABASE_URL is not set; daily word usage is in memory and resets when the server restarts.');
-  }
-  if (pool) {
-    sweepExpiredSubscriptions(pool, logger).catch(() => {});
-    const sweeperTimer = setInterval(() => {
-      sweepExpiredSubscriptions(pool, logger).catch(() => {});
-    }, 60_000);
-    if (typeof sweeperTimer.unref === 'function') {
-      sweeperTimer.unref();
-    }
+    logger.warn?.('[sonora] DATABASE_URL is not set; informational word usage is in memory and resets when the server restarts.');
   }
   const googleClientId = config.googleClientId ?? process.env.GOOGLE_CLIENT_ID;
   const googleClientSecret = config.googleClientSecret ?? process.env.GOOGLE_CLIENT_SECRET;
@@ -419,7 +392,7 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
       lastRateSweep = now;
     }
     const subject = req.session?.userId ? `user:${req.session.userId}` : `ip:${req.ip}`;
-    const key = createHmac('sha256', String(quotaSecret)).update(subject).digest('hex');
+    const key = createHmac('sha256', String(usageSecret)).update(subject).digest('hex');
     let timestamps = generationBuckets.get(key) || [];
     timestamps = timestamps.filter(timestamp => timestamp > cutoff);
     if (timestamps.length >= generationRateLimit) {
@@ -507,29 +480,39 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
   app.use(express.json({ limit: '8mb' }));
   const isAdmin = req => Boolean(req.session?.isAdmin &&
     req.session.adminPolicyVersion === adminPolicyVersion);
-  const quotaSubject = req => req.session?.userId
+  const usageSubject = req => req.session?.userId
     ? { type: 'user', id: req.session.userId }
     : { type: 'ip', id: req.ip };
-  const getPlanInfo = req => {
-    const signedIn = Boolean(req.session?.userId);
-    const plan = signedIn ? (req.session?.userPlan || 'free').toLowerCase() : 'guest';
-    const isUnlimited = Boolean(isAdmin(req));
-    const limit = plan === 'studio' ? 5_000 : plan === 'pro' ? 3_000 : plan === 'plus' ? 2_000 : signedIn ? 1_000 : 50;
-    return { plan, signedIn, isUnlimited, limit };
-  };
-  const readDailyQuota = req => {
-    const subject = quotaSubject(req);
-    const { isUnlimited, limit } = getPlanInfo(req);
-    return dailyWordQuota.getUsageFor(subject.type, subject.id, limit).then(quota =>
-      isUnlimited ? { ...quota, limit, unlimited: true } : { ...quota, limit });
-  };
-  const reserveDailyQuota = (req, words) => {
-    const subject = quotaSubject(req);
-    const { isUnlimited, limit } = getPlanInfo(req);
-    if (isUnlimited) {
-      return readDailyQuota(req).then(dailyWordQuota => ({ allowed: true, dailyWordQuota }));
+  const optionalUsage = async (load, message) => {
+    let timeout;
+    try {
+      // Usage is informational; a stalled store must not hold config or generation hostage.
+      return await Promise.race([
+        Promise.resolve().then(load),
+        new Promise(resolve => { timeout = setTimeout(() => resolve(null), 250); })
+      ]) ?? null;
+    } catch (error) {
+      logSafeError(logger, message, error);
+      return null;
+    } finally {
+      clearTimeout(timeout);
     }
-    return dailyWordQuota.consumeFor(subject.type, subject.id, words, limit);
+  };
+  const readUsage = req => {
+    if (!wordUsageStore) return null;
+    const subject = usageSubject(req);
+    return optionalUsage(
+      () => wordUsageStore.getUsageFor(subject.type, subject.id),
+      '[sonora] Informational word usage lookup failed'
+    );
+  };
+  const recordUsage = (req, words) => {
+    if (!wordUsageStore) return null;
+    const subject = usageSubject(req);
+    return optionalUsage(
+      () => wordUsageStore.recordFor(subject.type, subject.id, words),
+      '[sonora] Informational word usage update failed'
+    );
   };
   app.get('/auth/google', (req, res) => {
     if (!oauthEnabled) return res.status(503).send('Google sign-in is not configured.');
@@ -603,42 +586,32 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
         typeof payload.email === 'string' &&
         adminGoogleEmails.has(payload.email.trim().toLowerCase());
       req.session.adminPolicyVersion = adminPolicyVersion;
-      let plan = 'free';
       const email = typeof payload.email === 'string' ? payload.email.trim() : '';
       const name = typeof payload.name === 'string' ? payload.name.trim() : '';
+      req.session.userName = name;
+      req.session.userEmail = email;
       if (pool) {
         try {
           const userResult = await pool.query(
-            `INSERT INTO users (google_id, email, name, plan, last_login_at)
-             VALUES ($1, $2, $3, 'free', NOW())
+            `INSERT INTO users (google_id, email, name, last_login_at)
+             VALUES ($1, $2, $3, NOW())
              ON CONFLICT (google_id)
              DO UPDATE SET
                email = EXCLUDED.email,
                name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE users.name END,
-               plan = CASE
-                 WHEN users.expire_date IS NOT NULL AND users.expire_date <= NOW() THEN 'free'
-                 ELSE users.plan
-               END,
-               expire_date = CASE
-                 WHEN users.expire_date IS NOT NULL AND users.expire_date <= NOW() THEN NULL
-                 ELSE users.expire_date
-               END,
                last_login_at = NOW(),
                updated_at = NOW()
-             RETURNING plan, name, email, expire_date`,
+             RETURNING name, email`,
             [payload.sub, email, name]
           );
           if (userResult.rows[0]) {
-            plan = userResult.rows[0].plan || 'free';
-            req.session.userExpireDate = userResult.rows[0].expire_date || null;
+            req.session.userName = userResult.rows[0].name || name;
+            req.session.userEmail = userResult.rows[0].email || email;
           }
         } catch (dbError) {
           logSafeError(logger, '[sonora] Could not persist user record', dbError);
         }
       }
-      req.session.userPlan = plan;
-      req.session.userName = name;
-      req.session.userEmail = email;
       await new Promise((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()));
       return res.redirect(returnTo);
     } catch (error) {
@@ -661,82 +634,12 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
       return res.status(204).end();
     });
   });
-  app.post('/api/plans/subscribe-test', async (req, res) => {
-    if (!oauthEnabled) return res.status(503).json({ error: 'Google sign-in is not configured.' });
-    if (!req.session?.userId) return res.status(401).json({ error: 'Sign in with Google to subscribe.' });
-    const { plan: targetPlan, confirm, durationMinutes } = req.body || {};
-    if (!confirm) return res.status(400).json({ error: 'Subscription confirmation required.' });
-    const validPlans = ['plus', 'pro', 'studio'];
-    const chosenPlan = String(targetPlan || '').toLowerCase();
-    if (!validPlans.includes(chosenPlan)) return res.status(400).json({ error: 'Invalid plan selected.' });
-
-    const minutes = Number(durationMinutes);
-    const hasCustomMinutes = Number.isFinite(minutes) && minutes > 0;
-    const targetExpireDate = hasCustomMinutes
-      ? new Date(Date.now() + Math.round(minutes) * 60_000)
-      : (() => {
-          const d = new Date();
-          d.setMonth(d.getMonth() + 1);
-          return d;
-        })();
-
-    if (pool) {
-      try {
-        const queryText = `INSERT INTO users (google_id, email, name, plan, expire_date, updated_at, last_login_at)
-           VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-           ON CONFLICT (google_id)
-           DO UPDATE SET
-             plan = EXCLUDED.plan,
-             expire_date = EXCLUDED.expire_date,
-             email = CASE WHEN EXCLUDED.email <> '' THEN EXCLUDED.email ELSE users.email END,
-             name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE users.name END,
-             updated_at = NOW()
-           RETURNING plan, expire_date`;
-
-        const queryParams = [
-          req.session.userId,
-          req.session.userEmail || '',
-          req.session.userName || '',
-          chosenPlan,
-          targetExpireDate
-        ];
-
-        const updateResult = await pool.query(queryText, queryParams);
-        if (updateResult.rows[0]) {
-          req.session.userPlan = updateResult.rows[0].plan;
-          req.session.userExpireDate = updateResult.rows[0].expire_date;
-        }
-      } catch (dbError) {
-        logSafeError(logger, '[sonora] Could not update user subscription', dbError);
-        return res.status(500).json({ error: 'Failed to update subscription in database.' });
-      }
-    } else {
-      req.session.userPlan = chosenPlan;
-      req.session.userExpireDate = targetExpireDate.toISOString();
-    }
-
-    try {
-      await new Promise((resolve, reject) => {
-        req.session.save(err => (err ? reject(err) : resolve()));
-      });
-    } catch (saveError) {
-      logSafeError(logger, '[sonora] Could not persist session on subscription update', saveError);
-    }
-
-    return res.json({
-      ok: true,
-      plan: req.session.userPlan,
-      expireDate: req.session.userExpireDate,
-      message: `Successfully upgraded to ${chosenPlan} plan!`
-    });
-  });
-
   app.get('/api/health', async (req, res) => {
     try {
-      await dailyWordQuota.getUsage(req.ip);
+      if (pool) await pool.query('SELECT 1');
       return res.json({ ok: true, service: 'sonora-proxy', database: pool ? 'connected' : 'memory' });
     } catch (error) {
-      logSafeError(logger, '[sonora] Daily word quota storage failed', error);
+      logSafeError(logger, '[sonora] Database health check failed', error);
       return res.status(503).json({ ok: false, service: 'sonora-proxy' });
     }
   });
@@ -745,61 +648,44 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
       const signedIn = Boolean(req.session?.userId);
       if (signedIn && pool) {
         try {
-          const userRow = await pool.query(
-            `UPDATE users
-             SET plan = 'free', expire_date = NULL, updated_at = NOW()
-             WHERE google_id = $1 AND expire_date IS NOT NULL AND expire_date <= NOW() AND plan <> 'free'
-             RETURNING plan, name, email, expire_date`,
-            [req.session.userId]
-          );
-          if (userRow.rows[0]) {
-            req.session.userPlan = userRow.rows[0].plan;
-            req.session.userName = userRow.rows[0].name;
-            req.session.userEmail = userRow.rows[0].email;
-            req.session.userExpireDate = userRow.rows[0].expire_date;
+          const queryRow = await pool.query('SELECT name, email FROM users WHERE google_id = $1', [req.session.userId]);
+          if (queryRow.rows[0]) {
+            req.session.userName = queryRow.rows[0].name || req.session.userName || null;
+            req.session.userEmail = queryRow.rows[0].email || req.session.userEmail || null;
           } else {
-            const queryRow = await pool.query('SELECT plan, name, email, expire_date FROM users WHERE google_id = $1', [req.session.userId]);
-            if (queryRow.rows[0]) {
-              req.session.userPlan = queryRow.rows[0].plan;
-              req.session.userName = queryRow.rows[0].name;
-              req.session.userEmail = queryRow.rows[0].email;
-              req.session.userExpireDate = queryRow.rows[0].expire_date;
-            } else {
-              const insertRow = await pool.query(
-                `INSERT INTO users (google_id, email, name, plan, last_login_at)
-                 VALUES ($1, $2, $3, 'free', NOW())
-                 ON CONFLICT (google_id) DO NOTHING
-                 RETURNING plan, name, email, expire_date`,
-                [req.session.userId, req.session.userEmail || '', req.session.userName || '']
-              );
-              if (insertRow.rows[0]) {
-                req.session.userPlan = insertRow.rows[0].plan;
-                req.session.userExpireDate = insertRow.rows[0].expire_date;
-              }
+            const insertRow = await pool.query(
+              `INSERT INTO users (google_id, email, name, last_login_at)
+               VALUES ($1, $2, $3, NOW())
+               ON CONFLICT (google_id) DO NOTHING
+               RETURNING name, email`,
+              [req.session.userId, req.session.userEmail || '', req.session.userName || '']
+            );
+            if (insertRow.rows[0]) {
+              req.session.userName = insertRow.rows[0].name || req.session.userName || null;
+              req.session.userEmail = insertRow.rows[0].email || req.session.userEmail || null;
             }
           }
         } catch (dbError) {
           logSafeError(logger, '[sonora] Could not query user record', dbError);
         }
       }
-      const dailyQuota = await readDailyQuota(req);
+      const usage = await readUsage(req);
       return res.json({
         configured: Boolean(apiKey),
         modelId: defaultModel?.id ?? null, defaultModelId: defaultModel?.id ?? null,
         models: MODELS,
+        guestWordLimit: GUEST_WORD_LIMIT,
         characterLimit: defaultModel?.characterLimit ?? MODELS[0].characterLimit,
-        voices: VOICES, streaming: true, dailyWordQuota: dailyQuota,
+        voices: VOICES, streaming: true, usage,
         auth: { enabled: oauthEnabled, signedIn, admin: signedIn && isAdmin(req) },
         user: signedIn ? {
           name: req.session?.userName || null,
-          email: req.session?.userEmail || null,
-          plan: req.session?.userPlan || 'free',
-          expireDate: req.session?.userExpireDate || null
+          email: req.session?.userEmail || null
         } : null
       });
     } catch (error) {
-      logSafeError(logger, '[sonora] Daily word quota storage failed', error);
-      return res.status(503).json({ error: 'Daily word quota is temporarily unavailable.' });
+      logSafeError(logger, '[sonora] Could not load server configuration', error);
+      return res.status(503).json({ error: 'Server configuration is temporarily unavailable.' });
     }
   });
   const handleGenerate = (streaming) => async (req, res) => {
@@ -811,34 +697,25 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
     const selectedModel = MODELS.find(({ id }) => id === requestedModel) ?? (requestedModel === defaultModelId ? defaultModel : null);
     if (!selectedModel) return res.status(defaultModel ? 400 : 503).json({ error: 'Requested model is not configured on this server.' });
     if (selectedModel.requiresLogin && !req.session?.userId) {
-      return res.status(401).json({ error: 'Sign in with Google to use the Balanced model.' });
-    }
-    const userPlan = req.session?.userPlan || (req.session?.userId ? 'free' : 'guest');
-    const isPaidPlan = ['plus', 'pro', 'studio'].includes(userPlan);
-    const hasEnhancedAccess = isAdmin(req) || ['pro', 'studio'].includes(userPlan);
-    if (selectedModel.requiresAdmin && !hasEnhancedAccess) {
-      return res.status(403).json({ error: 'Enhanced Thinking requires a Pro, Studio, or Admin plan.' });
+      return res.status(401).json({ error: `Sign in with Google to use the ${selectedModel.name} model.` });
     }
     if (text.length > selectedModel.characterLimit) return res.status(413).json({ error: `Input exceeds the ${selectedModel.characterLimit.toLocaleString()} character application limit.` });
+    // This internal option comes only from the verified Google session, never the request body.
+    const bypassWordLimit = isAdmin(req);
+    const words = countWords(text);
+    const wordLimit = req.session?.userId ? selectedModel.wordLimit : GUEST_WORD_LIMIT;
+    if (!bypassWordLimit && words > wordLimit) {
+      return res.status(413).json({
+        error: `Input exceeds the ${wordLimit.toLocaleString()}-word per-request limit for ${selectedModel.name}.`,
+        wordCount: words,
+        wordLimit
+      });
+    }
     if (!apiKey) return res.status(503).json({ error: 'Server is not configured with GEMINI_API_KEY yet.' });
     if (active >= 2) return res.status(429).json({ error: 'Server is busy. Try again later.' });
     const requestBudget = takeGenerationSlot(req);
     if (!requestBudget.allowed) {
       return res.status(429).set('Retry-After', String(requestBudget.retryAfter)).json({ error: 'Too many generation requests. Try again later.' });
-    }
-    const words = countWords(text);
-    let reservation;
-    try {
-      reservation = await reserveDailyQuota(req, words);
-    } catch (error) {
-      logSafeError(logger, '[sonora] Daily word quota storage failed', error);
-      return res.status(503).json({ error: 'Daily word quota is temporarily unavailable.' });
-    }
-    if (!reservation.allowed) {
-      return res.status(429).json({
-        error: `Daily limit reached. You have ${reservation.dailyWordQuota.remaining} words remaining until the UTC reset.`,
-        dailyWordQuota: reservation.dailyWordQuota
-      });
     }
     active++;
     const controller = new AbortController();
@@ -864,13 +741,14 @@ export function createApp({ synthesize, config = {}, logger = console, quotaStor
       return res.write(line);
     };
     try {
+      await recordUsage(req, words);
       if (streaming) {
         res.status(200).set({ 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
-        emit({ type: 'start', sampleRate: 24000, totalChunks, dailyWordQuota: reservation.dailyWordQuota });
+        emit({ type: 'start', sampleRate: 24000, totalChunks });
         res.flushHeaders();
       }
       const pcm = await generate({
-        text, model: selectedModel.id, transport: selectedModel.transport, voice, signal: controller.signal,
+        text, model: selectedModel.id, transport: selectedModel.transport, voice, signal: controller.signal, bypassWordLimit,
         ...(streaming ? {
           onAudio: (frame) => {
             try {
@@ -964,10 +842,13 @@ export async function synthesizeWithLiveApi({
   onProgress,
   apiKey = process.env.GEMINI_API_KEY,
   client,
-  timeouts = {}
+  timeouts = {},
+  bypassWordLimit = false
 }) {
   const selected = MODELS.find(entry => entry.id === model);
   if (!selected || selected.transport !== 'live' || typeof text !== 'string' || !text.trim() || text.length > selected.characterLimit || !VOICES.includes(voice)) throw new Error('Invalid Live request.');
+  const words = countWords(text);
+  if (bypassWordLimit !== true && words > selected.wordLimit) throw new Error(`Input exceeds the ${selected.wordLimit.toLocaleString()}-word per-request limit for ${selected.name}.`);
   const ai = client ?? new GoogleGenAI({ apiKey });
   const timeoutValue = (value, fallback) => Number.isSafeInteger(value) && value > 0 ? value : fallback;
   const setupTimeoutMs = timeoutValue(timeouts.setupTimeoutMs, LIVE_SETUP_TIMEOUT_MS);

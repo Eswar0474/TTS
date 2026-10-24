@@ -12,7 +12,7 @@ export const MODEL_PRESENTATION = Object.freeze({
   'gemini-3.8-live-extended-thinking': {
     name: 'Enhanced Thinking',
     profile: 'Top-tier profile',
-    description: 'A premium voice generation profile; temporarily restricted to admins.'
+    description: 'An extended-thinking voice generation profile for signed-in users.'
   }
 });
 

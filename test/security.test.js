@@ -57,7 +57,7 @@ test('responses include browser security headers and reject an untrusted Host', 
   assert.match(forgedHost.body, /Host is not allowed/);
 });
 
-test('generation has a per-subject request budget in addition to the word quota', async t => {
+test('generation retains a per-subject short-window rate limit', async t => {
   let calls = 0;
   const base = await serve(t, { generationRateLimit: 2, generationRateWindowMs: 60_000 }, async () => {
     calls++;

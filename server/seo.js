@@ -9,17 +9,16 @@ export const DEFAULT_GOOGLE_SITE_VERIFICATION = 'WKcjy6CTtDshP2gWiMossBKitVn-jvi
 const TITLE = 'Sonora Voice Studio — AI Text to Speech & Audio';
 const DESCRIPTION = 'Turn scripts into expressive AI voice narrations with Sonora Voice Studio. Choose a voice, preview speech, and export MP3, WAV, FLAC, AAC, or OGG audio.';
 const GUIDE_TITLE = 'How It Works & FAQ — Sonora Voice Studio';
-const GUIDE_DESCRIPTION = 'Learn how Sonora Voice Studio turns scripts into expressive AI voice narrations, how delivery tags and exports work, and how daily allowances apply.';
-const PRICING_TITLE = 'Plans & Pricing — Sonora Voice Studio';
-const PRICING_DESCRIPTION = 'Compare Sonora Voice Studio monthly plans, daily word allowances, model access, and audio export formats.';
+const GUIDE_DESCRIPTION = 'Learn how Sonora Voice Studio turns scripts into expressive AI voice narrations, how per-request word limits work, and how to estimate generation time and export audio.';
 const HEAD_START = '<!-- seo:head:start -->';
 const HEAD_END = '<!-- seo:head:end -->';
 const NOINDEX = 'noindex, nofollow';
 
 const GUIDE_FAQ = Object.freeze([
-  ['How does the daily word allowance work?', 'Guests can submit up to 50 whitespace-separated words per IP per UTC day. Signed-in Google accounts can submit up to 1,000 words per account per UTC day. Words in the script and delivery tags both count. Allowances reset at 00:00 UTC.'],
-  ['Which models can I use?', 'Guests can use Low Quality. Signed-in free accounts can use Low Quality and Balanced. Enhanced Thinking is temporarily restricted to admins while paid-plan verification is built.'],
-  ['Which audio formats can I export?', 'Free accounts can download MP3. Plus and higher plans are intended to include WAV, FLAC, AAC, and OGG after billing and subscription verification are available.'],
+  ['How do the word limits work?', 'Guests can submit up to 50 words per request with Low Quality. After Google sign-in, each request can contain up to 1,000 words with Low Quality, 500 with Balanced, or 250 with Enhanced Thinking. Verified admins are exempt from these word limits; character and audio safety limits still apply. Whitespace-separated words in the script and delivery tags both count. There is no daily word or request quota. Short-window anti-abuse and server-capacity safeguards still apply.'],
+  ['Which models can I use?', 'Guests can use Low Quality. Signing in with Google enables Low Quality, Balanced, and Enhanced Thinking. No subscription is required.'],
+  ['Which audio formats can I export?', 'Guests can download MP3. Signing in with Google enables all five formats: MP3, WAV, FLAC, AAC, and OGG.'],
+  ['How long will generation take?', 'An approximate generation time appears above Generate audio before you start. It depends on input length and the selected model, not measured provider performance. A live elapsed timer runs during generation. Actual time varies with language, delivery, network, and provider load.'],
   ['Will tags produce an exact voice delivery?', 'Tags guide delivery, but generated output is not guaranteed to match the requested delivery exactly.'],
   ['Can I generate, preview, or export audio without JavaScript?', 'JavaScript is required for generation, preview, and export.']
 ]);
@@ -119,20 +118,10 @@ export function createSeoRouter({
   const origin = canonicalOrigin(siteUrl);
   const home = `${origin}/`;
   const guide = `${origin}/how-it-works`;
-  const pricing = `${origin}/pricing`;
   const router = express.Router();
   const pages = {
     home: { file: 'index.html', title: TITLE, description: DESCRIPTION, url: home, schema: homeSchema(home) },
-    guide: { file: 'how-it-works.html', title: GUIDE_TITLE, description: GUIDE_DESCRIPTION, url: guide, schema: guideSchema(guide) },
-    pricing: { file: 'pricing.html', title: PRICING_TITLE, description: PRICING_DESCRIPTION, url: pricing, schema: {
-      '@context': 'https://schema.org',
-      '@type': 'WebPage',
-      '@id': `${pricing}#webpage`,
-      url: pricing,
-      name: PRICING_TITLE,
-      description: PRICING_DESCRIPTION,
-      inLanguage: 'en'
-    } }
+    guide: { file: 'how-it-works.html', title: GUIDE_TITLE, description: GUIDE_DESCRIPTION, url: guide, schema: guideSchema(guide) }
   };
   const servePage = page => async (req, res) => {
     try {
@@ -156,18 +145,16 @@ export function createSeoRouter({
   router.get('/sitemap.xml', (req, res) => res
     .set('Cache-Control', 'public, max-age=3600')
     .type('application/xml')
-    .send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${[home, guide, pricing].map(url => `  <url><loc>${escapeHtml(url)}</loc></url>`).join('\n')}\n</urlset>\n`));
+    .send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${[home, guide].map(url => `  <url><loc>${escapeHtml(url)}</loc></url>`).join('\n')}\n</urlset>\n`));
   router.get('/index.html', (req, res) => res.redirect(301, '/'));
   router.get('/how-it-works.html', (req, res) => res.redirect(301, '/how-it-works'));
   router.get('/how-it-works/', (req, res, next) => req.path === '/how-it-works/'
     ? res.redirect(301, '/how-it-works')
     : next());
-  router.get('/pricing.html', (req, res) => res.redirect(301, '/pricing'));
-  router.get('/pricing/', (req, res, next) => req.path === '/pricing/'
-    ? res.redirect(301, '/pricing')
-    : next());
+  // Retire old URLs before static serving so stale builds cannot expose the removed page.
+  router.all(['/pricing', '/pricing/', '/pricing.html', '/pricing.js'], (req, res) => res.status(410)
+    .set('X-Robots-Tag', NOINDEX).type('text/plain').send('This page is no longer available.'));
   router.get('/how-it-works', servePage(pages.guide));
-  router.get('/pricing', servePage(pages.pricing));
   router.get('/', servePage(pages.home));
   router.use(['/api', '/auth'], (req, res) => res.status(404)
     .set('X-Robots-Tag', NOINDEX).type('text/plain').send('Not found.'));

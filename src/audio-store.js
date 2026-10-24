@@ -99,8 +99,9 @@ export function createAudioStore(sessionId) {
   }
 
   /**
-   * Read all chunks back in order and build a complete WAV Uint8Array.
-   * Streams chunk-by-chunk to avoid a single giant allocation where possible.
+   * Read stored chunks and build one complete WAV Uint8Array.
+   * IndexedDB helps during receipt, but getAll() and final assembly still
+   * materialize the audio in memory; this is not a disk-streaming WAV writer.
    */
   async function buildWav(sampleRate = 24000) {
     if (!totalBytes) throw new Error('The stream returned no audio.');
@@ -108,7 +109,7 @@ export function createAudioStore(sessionId) {
     const WAV_HEADER_BYTES = 44;
 
     if (usingMemory) {
-      // Memory path — same as before but without the 128 MiB cap
+      // The fallback also assembles a full WAV. Server/transport caps still apply.
       const wav = new Uint8Array(WAV_HEADER_BYTES + memBytes);
       const view = new DataView(wav.buffer);
       writeWavHeader(view, wav, memBytes, sampleRate);
@@ -139,7 +140,8 @@ export function createAudioStore(sessionId) {
 
   /**
    * Stream all IDB chunks sequentially into a callback.
-   * This is used by audio-export.js to feed FFmpeg without one big WAV in RAM.
+   * Available for a future incremental consumer. The current audio-export.js
+   * path takes a complete WAV and does not call this helper.
    *
    * @param {(chunk: Uint8Array) => void} onChunk
    */

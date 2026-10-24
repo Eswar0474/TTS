@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS daily_word_usage (
   usage_date DATE NOT NULL,
   subject_type TEXT NOT NULL CHECK (subject_type IN ('ip', 'user')),
   subject_hash CHAR(64) NOT NULL,
-  words_used INTEGER NOT NULL CHECK (words_used >= 0 AND words_used <= 1000),
+  words_used INTEGER NOT NULL CHECK (words_used >= 0),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (usage_date, subject_type, subject_hash)
@@ -21,12 +21,30 @@ CREATE TABLE IF NOT EXISTS daily_word_usage (
 
 CREATE INDEX IF NOT EXISTS idx_daily_word_usage_date ON daily_word_usage (usage_date);
 
+-- Upgrade databases created with the original 1,000-word storage constraint.
+ALTER TABLE daily_word_usage
+  DROP CONSTRAINT IF EXISTS daily_word_usage_words_used_check;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'daily_word_usage'::regclass
+      AND conname = 'daily_word_usage_words_used_nonnegative'
+  ) THEN
+    ALTER TABLE daily_word_usage
+      ADD CONSTRAINT daily_word_usage_words_used_nonnegative
+      CHECK (words_used >= 0);
+  END IF;
+END $$;
+
 -- Mark base migration as applied
 INSERT INTO sonora_schema_migrations (migration)
-VALUES ('001_daily_word_usage.sql')
+VALUES ('001_daily_word_usage.sql'), ('005_expand_daily_word_quota.sql')
 ON CONFLICT (migration) DO NOTHING;
 
--- 3. Users Table (Google Sign-In accounts & plans)
+-- 3. Users Table (Google Sign-In accounts; legacy columns are retained)
 CREATE TABLE IF NOT EXISTS users (
   google_id TEXT PRIMARY KEY,
   email TEXT NOT NULL,
@@ -62,4 +80,3 @@ BEGIN
 END $$;
 
 CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
-

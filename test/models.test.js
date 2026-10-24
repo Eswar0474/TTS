@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MODELS, DEFAULT_ENGINE, DEFAULT_MODEL_ID, ENHANCED_MODEL_ID, MAX_TURNS_PER_LIVE_SESSION, SPEECH_CHUNK_MAX_WORDS, createApp, synthesizeWithLiveApi, SYSTEM_INSTRUCTION } from '../server/index.js';
+import { MODELS, MODEL_WORD_LIMITS, GUEST_WORD_LIMIT, DEFAULT_ENGINE, DEFAULT_MODEL_ID, ENHANCED_MODEL_ID, MAX_TURNS_PER_LIVE_SESSION, SPEECH_CHUNK_MAX_WORDS, createApp, synthesizeWithLiveApi, SYSTEM_INSTRUCTION } from '../server/index.js';
 import { createMemoryDailyWordQuota } from '../server/quota.js';
 import { getModelPresentation, VOICE_LABELS } from '../src/presentation.js';
 
@@ -12,8 +12,15 @@ test('catalog contains Live models only', () => {
   ]);
   assert.ok(MODELS.every(model => model.transport === 'live' && model.verified === false));
   assert.deepEqual(MODELS.map(model => [model.requiresLogin, model.requiresAdmin]), [
-    [false, false], [true, false], [false, true]
+    [false, false], [true, false], [true, false]
   ]);
+  assert.deepEqual(MODELS.map(model => model.wordLimit), [1000, 500, 250]);
+  assert.deepEqual(MODEL_WORD_LIMITS, {
+    [DEFAULT_MODEL_ID]: 1000,
+    'gemini-3.8-live': 500,
+    [ENHANCED_MODEL_ID]: 250
+  });
+  assert.equal(GUEST_WORD_LIMIT, 50);
   assert.equal(MODELS.at(-1).id, ENHANCED_MODEL_ID);
   assert.equal(DEFAULT_ENGINE, DEFAULT_MODEL_ID);
 });
@@ -42,31 +49,35 @@ async function serve(t, synthesize, config = { apiKey: 'test-only', model: DEFAU
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-test('daily word quota separates IPs and resets at UTC midnight', async () => {
+test('daily usage counts repeat guest requests and resets the read at UTC midnight', async () => {
   let currentTime = new Date('2026-10-12T12:00:00.000Z');
-  const quota = createMemoryDailyWordQuota({ secret: 'stable-test-secret', now: () => currentTime });
-  assert.equal((await quota.consume('192.0.2.1', 50)).dailyWordQuota.remaining, 0);
-  assert.equal((await quota.getUsage('192.0.2.1')).used, 50);
-  assert.equal((await quota.getUsage('192.0.2.2')).used, 0);
+  const usage = createMemoryDailyWordQuota({ secret: 'stable-test-secret', now: () => currentTime });
+  assert.equal((await usage.record('192.0.2.1', 50)).wordsUsed, 50);
+  assert.equal((await usage.record('192.0.2.1', 50)).wordsUsed, 100);
+  assert.equal((await usage.getUsage('192.0.2.1')).wordsUsed, 100);
+  assert.equal((await usage.getUsage('192.0.2.2')).wordsUsed, 0);
   currentTime = new Date('2026-10-13T00:00:00.000Z');
-  assert.equal((await quota.getUsage('192.0.2.1')).used, 0);
+  assert.deepEqual(await usage.getUsage('192.0.2.1'), { wordsUsed: 0, date: '2026-10-13' });
 });
 
-test('Low is guest-accessible while Balanced requires sign-in and Enhanced is admin-only', async t => {
+test('Low is guest-accessible while Balanced and Enhanced require sign-in', async t => {
   const calls = [];
   const url = await serve(t, async options => { calls.push(options); return Buffer.from([0, 0]); });
   const config = await (await fetch(`${url}/api/config`)).json();
   assert.equal(config.defaultModelId, DEFAULT_MODEL_ID);
+  assert.equal(config.modelId, DEFAULT_MODEL_ID);
+  assert.equal(config.guestWordLimit, 50);
+  assert.deepEqual(Object.keys(config.usage).sort(), ['date', 'wordsUsed']);
+  assert.equal(config.usage.wordsUsed, 0);
+  assert.equal(Object.hasOwn(config, 'dailyWordQuota'), false);
   assert.deepEqual(config.models.map(model => model.id), MODELS.map(model => model.id));
+  assert.ok(config.models.every(model => Number.isSafeInteger(model.wordLimit) &&
+    Number.isSafeInteger(model.characterLimit) && typeof model.requiresLogin === 'boolean'));
   assert.equal(Object.hasOwn(config, 'rewardedAds'), false);
   const post = (model, text = 'Hello.') => fetch(`${url}/api/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, text, voice: 'Kore' }) });
   for (const model of MODELS) {
     if (model.requiresLogin) {
       assert.equal((await post(model.id)).status, 401);
-      continue;
-    }
-    if (model.requiresAdmin) {
-      assert.equal((await post(model.id)).status, 403);
       continue;
     }
     assert.equal((await post(model.id)).status, 200);
@@ -81,7 +92,7 @@ test('Low is guest-accessible while Balanced requires sign-in and Enhanced is ad
   assert.equal(calls.length, 1);
 });
 
-test('Balanced is for signed-in accounts and Enhanced is available only to admins', async t => {
+test('signed-in accounts can use Balanced and Enhanced without an admin or plan entitlement', async t => {
   let authParameters;
   let authNonce;
   let account = { sub: 'free-user', email: 'free@example.com' };
@@ -131,17 +142,202 @@ test('Balanced is for signed-in accounts and Enhanced is available only to admin
     return callback.headers.getSetCookie()[0].split(';')[0];
   };
   assert.equal((await post('gemini-3.8-live')).status, 401);
-  assert.equal((await post(ENHANCED_MODEL_ID)).status, 403);
+  assert.equal((await post(ENHANCED_MODEL_ID)).status, 401);
   const freeCookie = await signIn({ sub: 'free-user', email: 'free@example.com' });
   const freeConfig = await (await fetch(`${url}/api/config`, { headers: { Cookie: freeCookie } })).json();
   assert.equal(freeConfig.auth.admin, false);
+  assert.deepEqual(freeConfig.user, { name: null, email: 'free@example.com' });
   assert.equal((await post('gemini-3.8-live', freeCookie)).status, 200);
-  assert.equal((await post(ENHANCED_MODEL_ID, freeCookie)).status, 403);
+  assert.equal((await post(ENHANCED_MODEL_ID, freeCookie)).status, 200);
+  const removedPlanRoute = await fetch(`${url}/api/plans/subscribe-test`, {
+    method: 'POST', headers: { Cookie: freeCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ plan: 'pro', confirm: true })
+  });
+  assert.equal(removedPlanRoute.status, 404);
   const adminCookie = await signIn({ sub: 'admin-user', email: 'admin@example.com' });
   const adminConfig = await (await fetch(`${url}/api/config`, { headers: { Cookie: adminCookie } })).json();
   assert.equal(adminConfig.auth.admin, true);
+  assert.equal((await post('gemini-3.8-live', adminCookie)).status, 200);
   assert.equal((await post(ENHANCED_MODEL_ID, adminCookie)).status, 200);
-  assert.equal(calls, 2);
+  assert.equal(calls, 4);
+});
+
+test('per-request word caps are enforced independently of daily usage', async t => {
+  let calls = 0;
+  const url = await serve(t, async () => { calls++; return Buffer.from([0, 0]); });
+  const post = (model, text) => fetch(`${url}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, text, voice: 'Kore' })
+  });
+
+  const guestAccepted = await post(DEFAULT_MODEL_ID, Array(GUEST_WORD_LIMIT).fill('word').join(' '));
+  assert.equal(guestAccepted.status, 200);
+  const guestRejected = await post(DEFAULT_MODEL_ID, Array(GUEST_WORD_LIMIT + 1).fill('word').join(' '));
+  assert.equal(guestRejected.status, 413);
+  assert.deepEqual(await guestRejected.json(), {
+    error: 'Input exceeds the 50-word per-request limit for Gemini 2.5 Flash Native Audio Dialog.',
+    wordCount: 51,
+    wordLimit: 50
+  });
+
+  let authParameters;
+  let authNonce;
+  const oauthClient = {
+    generateAuthUrl(parameters) {
+      authParameters = parameters;
+      const url = new URL('https://accounts.google.test/auth');
+      url.searchParams.set('state', parameters.state);
+      return url.toString();
+    },
+    async getToken() { return { tokens: { id_token: 'verified-id-token' } }; },
+    async verifyIdToken() { return { getPayload: () => ({ sub: 'word-cap-user', nonce: authNonce }) }; }
+  };
+  const authUrl = await serve(t, async () => Buffer.from([0, 0]), {
+    apiKey: 'test-only',
+    model: DEFAULT_MODEL_ID,
+    googleClientId: 'test-client-id',
+    googleClientSecret: 'test-client-secret',
+    googleRedirectUri: 'https://studio.example/auth/google/callback',
+    sessionSecret: 'test-session-secret',
+    oauthClient
+  });
+  const start = await fetch(`${authUrl}/auth/google`, { redirect: 'manual' });
+  const initialCookie = start.headers.getSetCookie()[0].split(';')[0];
+  const authorizationUrl = new URL(start.headers.get('location'));
+  authNonce = authorizationUrl.searchParams.get('nonce');
+  const callback = await fetch(`${authUrl}/auth/google/callback?code=authorization-code&state=${authParameters.state}`, {
+    headers: { Cookie: initialCookie },
+    redirect: 'manual'
+  });
+  assert.equal(callback.status, 302);
+  const signedInCookie = callback.headers.getSetCookie()[0].split(';')[0];
+  const signedInPost = (model, text) => fetch(`${authUrl}/api/generate`, {
+    method: 'POST',
+    headers: { Cookie: signedInCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, text, voice: 'Kore' })
+  });
+  for (const model of MODELS) {
+    const accepted = await signedInPost(model.id, Array(model.wordLimit).fill('word').join(' '));
+    assert.equal(accepted.status, 200);
+    const rejected = await signedInPost(model.id, Array(model.wordLimit + 1).fill('word').join(' '));
+    assert.equal(rejected.status, 413);
+    const body = await rejected.json();
+    assert.equal(body.wordCount, model.wordLimit + 1);
+    assert.equal(body.wordLimit, model.wordLimit);
+  }
+  assert.equal(calls, 1);
+});
+
+test('direct Live synthesis rejects model word overflow before opening a provider connection', async () => {
+  for (const model of MODELS) {
+    for (const bypassWordLimit of [undefined, 'true']) {
+      await assert.rejects(
+        synthesizeWithLiveApi({
+          text: Array(model.wordLimit + 1).fill('word').join(' '),
+          model: model.id,
+          voice: 'Kore',
+          bypassWordLimit,
+          client: { live: { connect() { throw new Error('Provider must not be called.'); } } }
+        }),
+        new RegExp(`${model.wordLimit.toLocaleString()}-word per-request limit`)
+      );
+    }
+  }
+});
+
+test('only a verified allowlisted Google admin bypasses all model caps through real Live HTTP synthesis', async t => {
+  let authParameters;
+  let authNonce;
+  let account = { sub: 'admin-user', email: ' Admin@Example.com ', email_verified: true };
+  const oauthClient = {
+    generateAuthUrl(parameters) {
+      authParameters = parameters;
+      const url = new URL('https://accounts.google.test/auth');
+      url.searchParams.set('state', parameters.state);
+      return url.toString();
+    },
+    async getToken() { return { tokens: { id_token: 'verified-id-token' } }; },
+    async verifyIdToken() { return { getPayload: () => ({ ...account, nonce: authNonce }) }; }
+  };
+  const connections = [];
+  const client = { live: { connect: async ({ model, callbacks }) => {
+    connections.push(model);
+    callbacks.onmessage({ setupComplete: true });
+    return {
+      sendClientContent: async () => callbacks.onmessage({
+        serverContent: {
+          modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: 'AAA=' } }] },
+          turnComplete: true
+        }
+      }),
+      close() {}
+    };
+  } } };
+  const synthesisOptions = [];
+  const url = await serve(t, options => {
+    synthesisOptions.push({ model: options.model, bypassWordLimit: options.bypassWordLimit });
+    return synthesizeWithLiveApi({ ...options, client });
+  }, {
+    apiKey: 'test-only', model: DEFAULT_MODEL_ID,
+    googleClientId: 'test-client-id', googleClientSecret: 'test-client-secret',
+    googleRedirectUri: 'https://studio.example/auth/google/callback',
+    sessionSecret: 'test-session-secret', adminGoogleEmails: 'admin@example.com', oauthClient
+  });
+  const signIn = async nextAccount => {
+    account = nextAccount;
+    const start = await fetch(`${url}/auth/google`, { redirect: 'manual' });
+    const initialCookie = start.headers.getSetCookie()[0].split(';')[0];
+    authNonce = new URL(start.headers.get('location')).searchParams.get('nonce');
+    const callback = await fetch(`${url}/auth/google/callback?code=authorization-code&state=${authParameters.state}`, {
+      headers: { Cookie: initialCookie }, redirect: 'manual'
+    });
+    assert.equal(callback.status, 302);
+    return callback.headers.getSetCookie()[0].split(';')[0];
+  };
+  const post = (model, text, cookie) => fetch(`${url}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Admin': 'true', 'X-Bypass-Word-Limit': 'true', ...(cookie ? { Cookie: cookie } : {}) },
+    body: JSON.stringify({ model, text, voice: 'Kore', admin: true, isAdmin: true, bypassWordLimit: true })
+  });
+
+  const adminCookie = await signIn(account);
+  assert.equal((await (await fetch(`${url}/api/config`, { headers: { Cookie: adminCookie } })).json()).auth.admin, true);
+  for (const model of MODELS) {
+    const response = await post(model.id, Array(model.wordLimit + 1).fill('word').join(' '), adminCookie);
+    assert.equal(response.status, 200, model.id);
+    assert.match(response.headers.get('content-type'), /audio\/wav/);
+    assert.ok((await response.arrayBuffer()).byteLength > 44);
+  }
+  assert.deepEqual(synthesisOptions, MODELS.map(model => ({ model: model.id, bypassWordLimit: true })));
+  assert.ok(MODELS.every(model => connections.includes(model.id)));
+
+  for (const model of [MODELS[0], MODELS[2]]) {
+    const oversized = await post(model.id, 'x'.repeat(model.characterLimit + 1), adminCookie);
+    assert.equal(oversized.status, 413, model.id);
+    assert.match((await oversized.json()).error, /character application limit/);
+  }
+  assert.equal(synthesisOptions.length, 3);
+
+  for (const nextAccount of [
+    { sub: 'unverified-user', email: 'admin@example.com', email_verified: false },
+    { sub: 'unallowlisted-user', email: 'someone@example.com', email_verified: true }
+  ]) {
+    const cookie = await signIn(nextAccount);
+    assert.equal((await (await fetch(`${url}/api/config`, { headers: { Cookie: cookie } })).json()).auth.admin, false);
+    for (const model of MODELS) {
+      const rejected = await post(model.id, Array(model.wordLimit + 1).fill('word').join(' '), cookie);
+      assert.equal(rejected.status, 413, `${nextAccount.sub}: ${model.id}`);
+      assert.equal((await rejected.json()).wordLimit, model.wordLimit);
+    }
+  }
+  const guestOverflow = await post(DEFAULT_MODEL_ID, Array(GUEST_WORD_LIMIT + 1).fill('word').join(' '));
+  assert.equal(guestOverflow.status, 413);
+  assert.equal((await guestOverflow.json()).wordLimit, GUEST_WORD_LIMIT);
+  for (const model of MODELS.filter(entry => entry.requiresLogin)) {
+    assert.equal((await post(model.id, 'hello')).status, 401);
+  }
+  assert.equal(synthesisOptions.length, 3);
 });
 
 test('invalid configured model safely falls back to the catalog default', async t => {

@@ -1,4 +1,9 @@
-import { MAX_STREAM_WIRE_BYTES, createNDJSONParser } from './audio.js';
+import { MAX_STREAM_WIRE_BYTES, SAMPLE_RATE, createNDJSONParser } from './audio.js';
+
+export function isValidStreamStart(event) {
+  return event?.type === 'start' && event.sampleRate === SAMPLE_RATE &&
+    Number.isInteger(event.totalChunks) && event.totalChunks > 0;
+}
 
 /**
  * Consume an NDJSON response without cancelling a response that already
