@@ -13,7 +13,7 @@ import AuthModal from './components/AuthModal';
 import HistoryModal from './components/HistoryModal';
 
 
-const API_BASE_URL = (import.meta.env.BACKEND_URL || '').replace(/\/+$/, '');
+const API_BASE_URL = (import.meta.env.BACKEND_URL || 'http://localhost:7860').replace(/\/+$/, '');
 const SAMPLE = 'The future is not a destination. It is a rhythm we learn to move with.';
 
 const canShareFile = (file) => {

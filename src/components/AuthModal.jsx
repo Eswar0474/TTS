@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import './AuthModal.css';
 
-const API_BASE_URL = import.meta.env.BACKEND_URL || 'http://localhost:7860';
+const API_BASE_URL = (import.meta.env.BACKEND_URL || 'http://localhost:7860').replace(/\/+$/, '');
 
 export default function AuthModal({ onClose, onLoginSuccess }) {
   const [mode, setMode] = useState('login'); // 'login', 'register', 'otp'
