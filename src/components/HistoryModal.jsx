@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './AuthModal.css';
 
-const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:7860';
+const API_BASE_URL = import.meta.env.BACKEND_URL || 'http://localhost:7860';
 
 export default function HistoryModal({ onClose }) {
   const [history, setHistory] = useState([]);

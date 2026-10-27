@@ -46,8 +46,8 @@ export async function transcodeAudio(wavBytes, format) {
 
   const ffmpeg = await getFFmpeg();
   const sequence = ++exportSequence;
-  const inputName = `sonora-input-${sequence}.wav`;
-  const outputName = `sonora-output-${sequence}.${AUDIO_FORMATS[format].extension}`;
+  const inputName = `Echo Vani-input-${sequence}.wav`;
+  const outputName = `Echo Vani-output-${sequence}.${AUDIO_FORMATS[format].extension}`;
   ffmpegLog.length = 0;
   try {
     await ffmpeg.writeFile(inputName, wavBytes.slice());

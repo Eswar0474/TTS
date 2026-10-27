@@ -13,7 +13,7 @@ import AuthModal from './components/AuthModal';
 import HistoryModal from './components/HistoryModal';
 
 
-const API_BASE_URL = (import.meta.env.VITE_BACKEND_URL || '').replace(/\/+$/, '');
+const API_BASE_URL = (import.meta.env.BACKEND_URL || '').replace(/\/+$/, '');
 const SAMPLE = 'The future is not a destination. It is a rhythm we learn to move with.';
 
 const canShareFile = (file) => {
@@ -92,7 +92,7 @@ function App() {
   }
 
   function signOut() {
-    localStorage.removeItem('sonora_token');
+    localStorage.removeItem('Echo Vani_token');
     setUser(null);
     setAudioFormat('mp3');
     clearPreparedExport();
@@ -224,7 +224,7 @@ function App() {
         : await (await import('./audio-export.js')).transcodeAudio(sourceWav, formatKey);
       
       const format = AUDIO_FORMATS[formatKey];
-      const filename = `sonora-speech.${format.extension}`;
+      const filename = `Echo Vani-speech.${format.extension}`;
       const blob = new Blob([bytes], { type: format.mimeType });
       const file = typeof File === 'function' ? new File([blob], filename, { type: format.mimeType }) : null;
       const nextExport = { url: URL.createObjectURL(blob), filename, format: formatKey, file };
@@ -248,7 +248,7 @@ function App() {
     }
     setDownloadError('');
     try {
-      await navigator.share({ files: [file], title: 'Sonora speech' });
+      await navigator.share({ files: [file], title: 'Echo Vani' });
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return;
       setDownloadError(errorMessage(err, 'The file could not be shared.'));
@@ -351,10 +351,9 @@ function App() {
 
   return <div className="app-shell">
       <header className="topbar">
-          <div className="brand"><span className="brand-mark">◒</span><span>sonora</span><span className="badge">VOICE STUDIO</span></div>
+          <div className="brand"><span className="brand-mark">◒</span><span>Echo Vani</span><span className="badge">VOICE STUDIO</span></div>
           <div className="topbar-right">
               <span>Text-to-speech workspace</span>
-              <a className="help-link" href="/how-it-works">How it works &amp; FAQ</a>
               {signedIn ? (
                 <>
                   <button className="account-button" onClick={() => setShowHistoryModal(true)}>History</button>
@@ -367,7 +366,7 @@ function App() {
       </header>
       
     <main className="workspace">
-      <section className="hero" id="studio"><div><p className="eyebrow">SONORA · CREATIVE AUDIO</p><h1>AI text to speech<br /><em>with Sonora.</em></h1><p className="hero-copy">Turn your script into expressive voice narration. Choose a voice, guide its delivery with tags, preview the result, and export audio.</p></div><div className="hero-orb"><div className="orb-core" /><div className="wave wave-one" /><div className="wave wave-two" /><div className="wave wave-three" /></div></section>
+      <section className="hero" id="studio"><div><p className="eyebrow">Echo Vani · CREATIVE AUDIO</p><h1>AI text to speech<br /><em>with Echo Vani.</em></h1><p className="hero-copy">Turn your script into expressive voice narration. Choose a voice, guide its delivery with tags, preview the result, and export audio.</p></div><div className="hero-orb"><div className="orb-core" /><div className="wave wave-one" /><div className="wave wave-two" /><div className="wave wave-three" /></div></section>
       
       <section className="studio-grid">
          <div className="panel input-panel">
